@@ -1,4 +1,5 @@
 """FastAPI application exposing EchoSmith transcription services."""
+
 from __future__ import annotations
 
 import asyncio

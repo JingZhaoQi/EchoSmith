@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, Optional
 
 
 class TaskStatus(str, Enum):
@@ -24,14 +25,14 @@ class TaskRecord:
     progress: float = 0.0
     message: str = ""
     result_text: Optional[str] = None
-    segments: List[Dict[str, Any]] = field(default_factory=list)
-    source: Dict[str, Any] = field(default_factory=dict)
+    segments: list[dict[str, Any]] = field(default_factory=list)
+    source: dict[str, Any] = field(default_factory=dict)
     error: Optional[str] = None
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
-    logs: List[Dict[str, Any]] = field(default_factory=list)
+    logs: list[dict[str, Any]] = field(default_factory=list)
 
-    def snapshot(self) -> Dict[str, Any]:
+    def snapshot(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "status": self.status.value,
@@ -49,8 +50,8 @@ class TaskRecord:
 
 class TaskStore:
     def __init__(self) -> None:
-        self._tasks: Dict[str, TaskRecord] = {}
-        self._queues: Dict[str, List[asyncio.Queue]] = {}
+        self._tasks: dict[str, TaskRecord] = {}
+        self._queues: dict[str, list[asyncio.Queue]] = {}
         self._lock = asyncio.Lock()
 
     async def create_task(self, task: TaskRecord) -> TaskRecord:
@@ -68,9 +69,9 @@ class TaskStore:
         progress: Optional[float] = None,
         message: Optional[str] = None,
         result_text: Optional[str] = None,
-        segments: Optional[List[Dict[str, Any]]] = None,
+        segments: Optional[list[dict[str, Any]]] = None,
         error: Optional[str] = None,
-        log: Optional[Dict[str, Any]] = None,
+        log: Optional[dict[str, Any]] = None,
     ) -> TaskRecord:
         async with self._lock:
             record = self._tasks[task_id]
@@ -95,7 +96,7 @@ class TaskStore:
     async def get_task(self, task_id: str) -> TaskRecord:
         return self._tasks[task_id]
 
-    async def list_tasks(self) -> List[TaskRecord]:
+    async def list_tasks(self) -> list[TaskRecord]:
         return list(self._tasks.values())
 
     async def delete_task(self, task_id: str) -> None:
@@ -108,7 +109,7 @@ class TaskStore:
                     queue.put_nowait(None)  # Signal to close
                 del self._queues[task_id]
 
-    async def subscribe(self, task_id: str) -> AsyncIterator[Dict[str, Any]]:
+    async def subscribe(self, task_id: str) -> AsyncIterator[dict[str, Any]]:
         queue: asyncio.Queue = asyncio.Queue()
         async with self._lock:
             self._queues.setdefault(task_id, []).append(queue)

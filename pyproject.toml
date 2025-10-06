@@ -11,6 +11,8 @@ known_first_party = ["backend"]
 [tool.ruff]
 line-length = 100
 src = ["backend"]
+
+[tool.ruff.lint]
 select = ["E", "F", "B", "N", "UP", "I"]
 ignore = ["E501"]
 
