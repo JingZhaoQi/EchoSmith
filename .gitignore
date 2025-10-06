@@ -102,7 +102,6 @@ jspm_packages/
 .tern-port
 
 # Electron specific
-app/
 release/
 *.dmg
 *.exe
