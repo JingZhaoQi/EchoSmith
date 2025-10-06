@@ -1,7 +1,7 @@
 [tool.black]
 line-length = 100
 target-version = ["py310"]
-include = "backend/.*\.py"
+include = "backend/.*\\.py"
 
 [tool.isort]
 profile = "black"
