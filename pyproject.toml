@@ -1,14 +1,18 @@
-[project]
-name = "ququ"
-version = "0.1.0"
-description = "Add your description here"
-readme = "README.md"
-requires-python = ">=3.11"
-dependencies = [
-    "funasr>=1.2.7",
-    "librosa>=0.11.0",
-    "numpy<2",
-    "torch==2.0.1",
-    "torchaudio==2.0.2",
-    "torchvision==0.15.2",
-]
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+include = "backend/.*\.py"
+
+[tool.isort]
+profile = "black"
+line_length = 100
+known_first_party = ["backend"]
+
+[tool.ruff]
+line-length = 100
+src = ["backend"]
+select = ["E", "F", "B", "N", "UP", "I"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"backend/__main__.py" = ["T201"]
