@@ -257,6 +257,7 @@ async def _run_task(task_id: str, source_info: dict, cleanup_paths: list[str]) -
         # Initialize engine with download callback
         if engine._download_callback is None:
             engine._download_callback = model_download_cb
+
         audio_path = Path(source_info["path"])
         await task_store.update_task(task_id, message="转写中", progress=0.05)
 
