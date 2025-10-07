@@ -3,15 +3,13 @@ from __future__ import annotations
 
 import asyncio
 import math
-import os
 import re
-import shlex
 import subprocess
 import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable
 
 from funasr import AutoModel
 
@@ -31,7 +29,7 @@ class Segment:
 @dataclass
 class TranscriptionResult:
     text: str
-    segments: List[Segment]
+    segments: list[Segment]
     duration_ms: int
 
 
@@ -40,7 +38,7 @@ ProgressCallback = Callable[[float, str, str], None]
 SENTENCE_PATTERN = re.compile(r"[^。！？!?…\n]+[。！？!?…]+|[^。！？!?…\n]+", re.UNICODE)
 
 
-def _split_sentences(text: str) -> List[str]:
+def _split_sentences(text: str) -> list[str]:
     """Split text into sentences while keeping ending punctuation."""
     if not text:
         return []
@@ -52,7 +50,7 @@ class ASREngine:
     """Stateful ASR engine that wraps FunASR for repeated use."""
 
     def __init__(self, chunk_duration_ms: int = CHUNK_DURATION_MS) -> None:
-        self._model: Optional[AutoModel] = None
+        self._model: AutoModel | None = None
         self._model_lock = asyncio.Lock()
         self.chunk_duration_ms = chunk_duration_ms
 
@@ -83,9 +81,9 @@ class ASREngine:
     async def transcribe(
         self,
         audio_path: Path,
-        progress_cb: Optional[ProgressCallback] = None,
-        pause_event: Optional[asyncio.Event] = None,
-        cancelled_checker: Optional[Callable[[], bool]] = None,
+        progress_cb: ProgressCallback | None = None,
+        pause_event: asyncio.Event | None = None,
+        cancelled_checker: Callable[[], bool] | None = None,
     ) -> TranscriptionResult:
         await self.ensure_model()
         return await asyncio.to_thread(
@@ -99,16 +97,16 @@ class ASREngine:
     def _transcribe_sync(
         self,
         audio_path: Path,
-        progress_cb: Optional[ProgressCallback] = None,
-        pause_event: Optional[asyncio.Event] = None,
-        cancelled_checker: Optional[Callable[[], bool]] = None,
+        progress_cb: ProgressCallback | None = None,
+        pause_event: asyncio.Event | None = None,
+        cancelled_checker: Callable[[], bool] | None = None,
     ) -> TranscriptionResult:
         assert self._model is not None
 
         duration_ms = probe_duration_ms(audio_path)
         chunk_count = max(1, math.ceil(duration_ms / self.chunk_duration_ms))
 
-        accumulated: List[Segment] = []
+        accumulated: list[Segment] = []
         partial_text = ""
 
         for index in range(chunk_count):

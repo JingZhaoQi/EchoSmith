@@ -23,7 +23,7 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-from .asr_engine import ASREngine, MODEL_ROOT, Segment
+from .asr_engine import MODEL_ROOT, ASREngine
 from .task_store import TaskRecord, TaskStatus, task_store
 
 
@@ -51,6 +51,8 @@ UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
 
 engine = ASREngine()
 API_TOKEN = os.environ.get("ECHOSMITH_TOKEN")
+UPLOAD_FILE_REQUIRED = File(...)
+LANGUAGE_FORM_FIELD = Form(default="zh")
 
 
 @app.get("/api/health")
@@ -91,8 +93,8 @@ async def get_task(task_id: str, _: None = Depends(verify_token)) -> JSONRespons
 
 @app.post("/api/tasks", status_code=201)
 async def create_task(
-    file: UploadFile = File(...),
-    language: str = Form(default="zh"),
+    file: UploadFile = UPLOAD_FILE_REQUIRED,
+    language: str = LANGUAGE_FORM_FIELD,
     _: None = Depends(verify_token),
 ) -> JSONResponse:
     task_id = uuid.uuid4().hex
@@ -311,6 +313,7 @@ def _ms_to_timestamp(ms: int) -> str:
     minutes, seconds = divmod(seconds, 60)
     hours, minutes = divmod(minutes, 60)
     return f"{hours:02d}:{minutes:02d}:{seconds:02d},{millis:03d}"
+
 @app.get("/api/tasks/{task_id}/export")
 async def export_task(task_id: str, format: str = "txt", _: None = Depends(verify_token)):
     try:
