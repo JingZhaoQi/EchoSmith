@@ -1,8 +1,0 @@
-/Users/qijingzhao/Programs/EchoSmith/tauri/src-tauri/target/debug/deps/icu_normalizer-d4efc102a7cbffeb.d: /Users/qijingzhao/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.0.0/src/lib.rs /Users/qijingzhao/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.0.0/src/properties.rs /Users/qijingzhao/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.0.0/src/provider.rs /Users/qijingzhao/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.0.0/src/uts46.rs
-
-/Users/qijingzhao/Programs/EchoSmith/tauri/src-tauri/target/debug/deps/libicu_normalizer-d4efc102a7cbffeb.rmeta: /Users/qijingzhao/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.0.0/src/lib.rs /Users/qijingzhao/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.0.0/src/properties.rs /Users/qijingzhao/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.0.0/src/provider.rs /Users/qijingzhao/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.0.0/src/uts46.rs
-
-/Users/qijingzhao/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.0.0/src/lib.rs:
-/Users/qijingzhao/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.0.0/src/properties.rs:
-/Users/qijingzhao/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.0.0/src/provider.rs:
-/Users/qijingzhao/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.0.0/src/uts46.rs:
