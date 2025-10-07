@@ -49,12 +49,18 @@ jobs:
             librsvg2-dev \
             libayatana-appindicator3-dev \
             libsoup2.4-dev
-          if ! sudo apt-get install -y libjavascriptcoregtk-4.1-dev; then
-            sudo apt-get install -y libjavascriptcoregtk-4.0-dev
-          fi
-          if ! sudo apt-get install -y libwebkit2gtk-4.1-dev; then
-            sudo apt-get install -y libwebkit2gtk-4.0-dev
-          fi
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev || \
+            sudo apt-get install -y libwebkit2gtk-4.0-dev libjavascriptcoregtk-4.0-dev
+          sudo bash -c '
+            pc_dir="/usr/lib/x86_64-linux-gnu/pkgconfig"
+            if [ -d "$pc_dir" ]; then
+              for base in webkit2gtk javascriptcoregtk; do
+                if [ -f "$pc_dir/${base}-4.1.pc" ] && [ ! -f "$pc_dir/${base}-4.0.pc" ]; then
+                  ln -s "$pc_dir/${base}-4.1.pc" "$pc_dir/${base}-4.0.pc"
+                fi
+              done
+            fi
+          '
       - name: Cargo check (Tauri)
         run: |
           cd tauri
