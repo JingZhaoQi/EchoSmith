@@ -22,7 +22,8 @@ export const useTasksStore = create<TasksState>((set) => ({
     set(() => ({ tasks: Object.fromEntries(list.map((item) => [item.id, item])) })),
   removeTask: (id) =>
     set((state) => {
-      const { [id]: removed, ...remaining } = state.tasks;
+      const remaining = { ...state.tasks };
+      delete remaining[id];
       return {
         tasks: remaining,
         activeTaskId: state.activeTaskId === id ? null : state.activeTaskId

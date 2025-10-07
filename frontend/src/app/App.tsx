@@ -21,7 +21,11 @@ function AppShell(): JSX.Element {
   const setTasks = useTasksStore((state) => state.setTasks);
   const setActiveTask = useTasksStore((state) => state.setActiveTask);
 
-  const healthQuery = useQuery({ queryKey: ["health"], queryFn: fetchHealth, refetchInterval: 30_000 });
+  const {
+    data: health,
+    isLoading: isHealthLoading,
+    isError: isHealthError
+  } = useQuery({ queryKey: ["health"], queryFn: fetchHealth, refetchInterval: 30_000 });
   const tasksQuery = useQuery({
     queryKey: ["tasks"],
     queryFn: listTasks
@@ -44,7 +48,28 @@ function AppShell(): JSX.Element {
     void ensureBackendBase();
   }, []);
 
-  const health = healthQuery.data;
+  const healthStatusText = (() => {
+    if (isHealthLoading) {
+      return "后端检测中…";
+    }
+    if (isHealthError) {
+      return "后端不可用";
+    }
+    if (health?.status === "ok") {
+      return "后端在线";
+    }
+    return "后端降级";
+  })();
+
+  const healthIndicatorClass = (() => {
+    if (isHealthLoading) {
+      return "bg-amber-400 animate-pulse";
+    }
+    if (isHealthError || health?.status !== "ok") {
+      return "bg-red-500";
+    }
+    return "bg-emerald-500";
+  })();
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-background via-background to-indigo-50/20 dark:to-indigo-950/20 text-foreground flex flex-col">
@@ -60,6 +85,10 @@ function AppShell(): JSX.Element {
           </div>
         </div>
         <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2 text-sm text-muted-foreground" aria-live="polite">
+            <span className={`h-2.5 w-2.5 rounded-full ${healthIndicatorClass}`} aria-hidden="true" />
+            <span>{healthStatusText}</span>
+          </div>
           <ThemeToggle theme={theme} onThemeChange={setTheme} />
         </div>
       </header>
