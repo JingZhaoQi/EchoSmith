@@ -24,7 +24,7 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-from .asr_engine import MODEL_ROOT, ASREngine
+from .asr_engine import ASREngine
 from .task_store import TaskRecord, TaskStatus, task_store
 
 
