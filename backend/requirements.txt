@@ -2,7 +2,5 @@ fastapi>=0.110
 uvicorn[standard]>=0.29
 funasr>=1.1.5
 modelscope>=1.11
-yt-dlp>=2024.4.9
-requests>=2.31
 soundfile>=0.12
 python-multipart>=0.0.6
