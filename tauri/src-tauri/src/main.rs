@@ -28,7 +28,6 @@ fn get_backend_config(state: State<BackendState>) -> BackendConfig {
 
 fn main() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_log::Builder::default().build())
         .manage(spawn_backend())
         .invoke_handler(tauri::generate_handler![get_backend_config])
         .run(|app_handle, event| match event {
