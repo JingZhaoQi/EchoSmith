@@ -31,7 +31,7 @@ export const apiClient = axios.create({ baseURL });
 async function resolveBackendBase(): Promise<string> {
   const tauriWindow = window as Window & { __TAURI__?: unknown };
   if (tauriWindow.__TAURI__) {
-    const { invoke } = await import("@tauri-apps/api/tauri");
+    const { invoke } = await import("@tauri-apps/api/core");
     const config = await invoke<{ url: string; token: string }>("get_backend_config");
     backendToken = config.token;
     apiClient.defaults.baseURL = `${config.url}/api`;

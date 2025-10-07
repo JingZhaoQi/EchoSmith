@@ -37,6 +37,11 @@ jobs:
         with:
           targets: ${{ matrix.platform == 'macos-latest' && 'x86_64-apple-darwin,aarch64-apple-darwin' || 'x86_64-pc-windows-msvc' }}
 
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tauri/src-tauri
+
       - name: Install dependencies (macOS)
         if: matrix.platform == 'macos-latest'
         run: |

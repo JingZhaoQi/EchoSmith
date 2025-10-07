@@ -4,7 +4,7 @@ use std::{path::PathBuf, process::Command, sync::Mutex};
 
 use portpicker::pick_unused_port;
 use rand::{distributions::Alphanumeric, Rng};
-use tauri::{command, api::path::resource_dir, Manager, RunEvent, State};
+use tauri::{command, Manager, State};
 
 struct BackendState {
     process: Mutex<Option<std::process::Child>>,
@@ -28,25 +28,24 @@ fn get_backend_config(state: State<BackendState>) -> BackendConfig {
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_shell::init())
         .setup(|app| {
-            let backend_state = spawn_backend(app.handle())?;
+            let backend_state = spawn_backend(app.handle().clone())?;
             app.manage(backend_state);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![get_backend_config])
         .build(tauri::generate_context!())
         .expect("failed to build Tauri app")
-        .run(|app_handle, event| match event {
-            RunEvent::ExitRequested { api, .. } => {
-                api.prevent_exit();
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                // Clean up backend process
                 if let Some(state) = app_handle.try_state::<BackendState>() {
                     if let Some(mut child) = state.process.lock().unwrap().take() {
                         let _ = child.kill();
                     }
                 }
-                std::process::exit(0);
             }
-            _ => {}
         });
 }
 
@@ -86,35 +85,43 @@ fn spawn_backend(app_handle: tauri::AppHandle) -> Result<BackendState, Box<dyn s
 }
 
 fn get_backend_path(app_handle: &tauri::AppHandle) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let package_info = app_handle.package_info();
-    let resource_path = resource_dir(package_info, &app_handle.env())
-        .ok_or("Failed to get resource directory")?;
+    let resource_path = app_handle.path().resource_dir()
+        .map_err(|_| "Failed to get resource directory")?;
 
-    // Try to find backend executable or directory
-    #[cfg(target_os = "macos")]
-    let backend_executable = resource_path.join("backend").join("backend");
-
+    // Define backend executable name based on OS
     #[cfg(target_os = "windows")]
-    let backend_executable = resource_path.join("backend").join("backend.exe");
+    let backend_exe_name = "backend.exe";
 
-    #[cfg(target_os = "linux")]
-    let backend_executable = resource_path.join("backend").join("backend");
+    #[cfg(not(target_os = "windows"))]
+    let backend_exe_name = "backend";
 
-    if backend_executable.exists() {
-        Ok(backend_executable)
-    } else {
-        // Fallback to development mode
-        let backend_dir = std::env::current_dir()?
-            .parent()
-            .ok_or("Cannot find parent directory")?
-            .parent()
-            .ok_or("Cannot find grandparent directory")?
-            .join("backend");
+    // Try multiple possible locations
+    let possible_paths = vec![
+        // Direct path (Tauri 1.x style)
+        resource_path.join("backend").join(backend_exe_name),
+        // Tauri 2.x with relative path preserved
+        resource_path.join("_up_").join("_up_").join("tauri_backend_dist").join("backend").join(backend_exe_name),
+        // Alternative Tauri 2.x structure
+        resource_path.join("tauri_backend_dist").join("backend").join(backend_exe_name),
+    ];
 
-        if backend_dir.exists() {
-            Ok(backend_dir)
-        } else {
-            Err(format!("Backend not found at {:?} or {:?}", backend_executable, backend_dir).into())
+    for path in &possible_paths {
+        if path.exists() {
+            return Ok(path.clone());
         }
+    }
+
+    // Fallback to development mode
+    let backend_dir = std::env::current_dir()?
+        .parent()
+        .ok_or("Cannot find parent directory")?
+        .parent()
+        .ok_or("Cannot find grandparent directory")?
+        .join("backend");
+
+    if backend_dir.exists() {
+        Ok(backend_dir)
+    } else {
+        Err(format!("Backend not found. Tried paths: {:?}", possible_paths).into())
     }
 }
