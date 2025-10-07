@@ -1,6 +1,6 @@
 {
   "package": {
-    "productName": "闻见",
+    "productName": "EchoSmith",
     "version": "0.1.0"
   },
   "tauri": {
