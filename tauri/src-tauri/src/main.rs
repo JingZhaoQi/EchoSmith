@@ -30,6 +30,8 @@ fn main() {
     tauri::Builder::default()
         .manage(spawn_backend())
         .invoke_handler(tauri::generate_handler![get_backend_config])
+        .build(tauri::generate_context!())
+        .expect("failed to build Tauri app")
         .run(|app_handle: AppHandle, event: RunEvent| match event {
             RunEvent::ExitRequested { api, .. } => {
                 api.prevent_exit();
