@@ -1,4 +1,5 @@
 """FastAPI application exposing EchoSmith transcription services."""
+
 from __future__ import annotations
 
 import asyncio
@@ -228,7 +229,9 @@ async def _run_task(task_id: str, source_info: dict, cleanup_paths: list[str]) -
         )
 
     try:
-        await task_store.update_task(task_id, status=TaskStatus.RUNNING, message="准备中", progress=0.01)
+        await task_store.update_task(
+            task_id, status=TaskStatus.RUNNING, message="准备中", progress=0.01
+        )
         audio_path = Path(source_info["path"])
         await task_store.update_task(task_id, message="转写中", progress=0.05)
 
@@ -313,6 +316,7 @@ def _ms_to_timestamp(ms: int) -> str:
     minutes, seconds = divmod(seconds, 60)
     hours, minutes = divmod(minutes, 60)
     return f"{hours:02d}:{minutes:02d}:{seconds:02d},{millis:03d}"
+
 
 @app.get("/api/tasks/{task_id}/export")
 async def export_task(task_id: str, format: str = "txt", _: None = Depends(verify_token)):

@@ -1,4 +1,5 @@
 """Entrypoint to run EchoSmith backend with uvicorn."""
+
 from __future__ import annotations
 
 import os

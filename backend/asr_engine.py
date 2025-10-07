@@ -1,4 +1,5 @@
 """ASR engine and audio utilities for EchoSmith backend."""
+
 from __future__ import annotations
 
 import asyncio
@@ -60,7 +61,8 @@ class ASREngine:
                 return
 
             model_paths = {
-                "model": MODEL_ROOT / "speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
+                "model": MODEL_ROOT
+                / "speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
                 "vad": MODEL_ROOT / "speech_fsmn_vad_zh-cn-16k-common-pytorch",
                 "punc": MODEL_ROOT / "punc_ct-transformer_zh-cn-common-vocab272727-pytorch",
             }

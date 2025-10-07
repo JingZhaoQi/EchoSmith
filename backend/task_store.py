@@ -1,4 +1,5 @@
 """In-memory task registry and progress broadcasting for EchoSmith."""
+
 from __future__ import annotations
 
 import asyncio
