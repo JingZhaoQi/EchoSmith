@@ -4,7 +4,7 @@ use std::{process::Command, sync::Mutex};
 
 use portpicker::pick_unused_port;
 use rand::{distributions::Alphanumeric, Rng};
-use tauri::{command, Manager, RunEvent, State};
+use tauri::{command, AppHandle, Manager, RunEvent, State};
 
 struct BackendState {
     process: Mutex<Option<std::process::Child>>,
@@ -30,7 +30,7 @@ fn main() {
     tauri::Builder::default()
         .manage(spawn_backend())
         .invoke_handler(tauri::generate_handler![get_backend_config])
-        .run(|app_handle, event| match event {
+        .run(|app_handle: AppHandle, event: RunEvent| match event {
             RunEvent::ExitRequested { api, .. } => {
                 api.prevent_exit();
                 if let Some(state) = app_handle.try_state::<BackendState>() {
