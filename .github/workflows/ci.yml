@@ -49,6 +49,9 @@ jobs:
             librsvg2-dev \
             libayatana-appindicator3-dev \
             libsoup2.4-dev
+          if ! sudo apt-get install -y libjavascriptcoregtk-4.1-dev; then
+            sudo apt-get install -y libjavascriptcoregtk-4.0-dev
+          fi
           if ! sudo apt-get install -y libwebkit2gtk-4.1-dev; then
             sudo apt-get install -y libwebkit2gtk-4.0-dev
           fi
