@@ -83,6 +83,20 @@ jobs:
         working-directory: tauri
         run: npm install
 
+      - name: Prepare backend for bundling (macOS)
+        if: matrix.platform == 'macos-latest'
+        shell: bash
+        run: |
+          mkdir -p tauri/src-tauri/backend
+          cp tauri_backend_dist/backend/backend tauri/src-tauri/backend/
+
+      - name: Prepare backend for bundling (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: bash
+        run: |
+          mkdir -p tauri/src-tauri/backend
+          cp tauri_backend_dist/backend/backend.exe tauri/src-tauri/backend/
+
       - name: Build Tauri app
         working-directory: tauri
         run: npm run build

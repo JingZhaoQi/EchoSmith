@@ -97,8 +97,10 @@ fn get_backend_path(app_handle: &tauri::AppHandle) -> Result<PathBuf, Box<dyn st
 
     // Try multiple possible locations
     let possible_paths = vec![
-        // Direct path (Tauri 1.x style)
+        // Direct path in Resources/backend (new structure)
         resource_path.join("backend").join(backend_exe_name),
+        // Tauri 1.x style
+        resource_path.join("backend").join("backend").join(backend_exe_name),
         // Tauri 2.x with relative path preserved
         resource_path.join("_up_").join("_up_").join("tauri_backend_dist").join("backend").join(backend_exe_name),
         // Alternative Tauri 2.x structure
