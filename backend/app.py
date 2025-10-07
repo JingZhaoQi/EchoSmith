@@ -59,12 +59,14 @@ LANGUAGE_FORM_FIELD = Form(default="zh")
 @app.get("/api/health")
 async def healthcheck() -> JSONResponse:
     ffmpeg_ok = _command_exists("ffmpeg")
-    models_ok = _models_available()
+    model_downloading = engine.is_downloading()
+    model_cache_dir = engine.get_model_cache_dir()
     return JSONResponse(
         {
             "ffmpeg": ffmpeg_ok,
-            "models": models_ok,
-            "status": "ok" if ffmpeg_ok and models_ok else "degraded",
+            "model_downloading": model_downloading,
+            "model_cache_dir": model_cache_dir,
+            "status": "ok" if ffmpeg_ok else "degraded",
         }
     )
 
@@ -228,10 +230,33 @@ async def _run_task(task_id: str, source_info: dict, cleanup_paths: list[str]) -
             ),
         )
 
+    def model_download_cb(stage: str, progress: float, message: str) -> None:
+        """Callback for model download progress."""
+        loop.call_soon_threadsafe(
+            asyncio.create_task,
+            task_store.update_task(
+                task_id,
+                status=TaskStatus.RUNNING,
+                progress=progress * 0.3,  # Model download takes first 30% of progress
+                message=f"模型{stage}",
+                log={
+                    "timestamp": time.time(),
+                    "type": "model_download",
+                    "stage": stage,
+                    "message": message,
+                    "progress": progress,
+                },
+            ),
+        )
+
     try:
         await task_store.update_task(
             task_id, status=TaskStatus.RUNNING, message="准备中", progress=0.01
         )
+
+        # Initialize engine with download callback
+        if engine._download_callback is None:
+            engine._download_callback = model_download_cb
         audio_path = Path(source_info["path"])
         await task_store.update_task(task_id, message="转写中", progress=0.05)
 
@@ -290,15 +315,6 @@ def _command_exists(cmd: str) -> bool:
     return shutil.which(cmd) is not None
 
 
-def _models_available() -> bool:
-    return all(
-        (MODEL_ROOT / name).exists()
-        for name in [
-            "speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
-            "speech_fsmn_vad_zh-cn-16k-common-pytorch",
-            "punc_ct-transformer_zh-cn-common-vocab272727-pytorch",
-        ]
-    )
 
 
 def _segments_to_srt(segments: list[dict]) -> str:

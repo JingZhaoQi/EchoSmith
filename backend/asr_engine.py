@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import os
 import re
 import subprocess
 import tempfile
@@ -16,7 +17,16 @@ from funasr import AutoModel
 
 CHUNK_DURATION_MS = 15_000
 MODEL_CARD = "FunASR Paraformer Large (zh-CN)"
-MODEL_ROOT = Path(__file__).resolve().parent.parent / "models"
+
+# Model IDs for ModelScope
+MODEL_IDS = {
+    "model": "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
+    "vad": "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch",
+    "punc": "iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch",
+}
+
+# Model download progress callback
+ModelDownloadCallback = Callable[[str, float, str], None]
 
 
 @dataclass
@@ -50,35 +60,62 @@ def _split_sentences(text: str) -> list[str]:
 class ASREngine:
     """Stateful ASR engine that wraps FunASR for repeated use."""
 
-    def __init__(self, chunk_duration_ms: int = CHUNK_DURATION_MS) -> None:
+    def __init__(
+        self,
+        chunk_duration_ms: int = CHUNK_DURATION_MS,
+        download_callback: ModelDownloadCallback | None = None,
+    ) -> None:
         self._model: AutoModel | None = None
         self._model_lock = asyncio.Lock()
         self.chunk_duration_ms = chunk_duration_ms
+        self._download_callback = download_callback
+        self._model_downloading = False
+
+    def get_model_cache_dir(self) -> str:
+        """Get the directory where models will be cached."""
+        cache_home = os.environ.get("MODELSCOPE_CACHE") or os.path.join(
+            os.path.expanduser("~"), ".cache", "modelscope", "hub"
+        )
+        return cache_home
+
+    def is_downloading(self) -> bool:
+        """Check if model is currently being downloaded."""
+        return self._model_downloading
 
     async def ensure_model(self) -> None:
+        """Load or download FunASR models with progress reporting."""
         async with self._model_lock:
             if self._model is not None:
                 return
 
-            model_paths = {
-                "model": MODEL_ROOT
-                / "speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
-                "vad": MODEL_ROOT / "speech_fsmn_vad_zh-cn-16k-common-pytorch",
-                "punc": MODEL_ROOT / "punc_ct-transformer_zh-cn-common-vocab272727-pytorch",
-            }
-            missing = [key for key, path in model_paths.items() if not path.exists()]
-            if missing:
-                missing_desc = "\n".join(f"- {model_paths[key]}" for key in missing)
-                raise FileNotFoundError(
-                    "缺少 FunASR 模型文件，请将模型复制到 models/ 目录:\n" + missing_desc
-                )
+            self._model_downloading = True
+            try:
+                cache_dir = self.get_model_cache_dir()
 
-            self._model = AutoModel(
-                model=str(model_paths["model"]),
-                vad_model=str(model_paths["vad"]),
-                punc_model=str(model_paths["punc"]),
-                disable_update=True,
-            )
+                if self._download_callback:
+                    self._download_callback(
+                        "初始化",
+                        0.0,
+                        f"正在准备下载模型...\n缓存目录: {cache_dir}",
+                    )
+
+                # Download models using ModelScope Auto-download
+                # FunASR will automatically download models on first use
+                await asyncio.to_thread(self._load_model_sync)
+
+                if self._download_callback:
+                    self._download_callback("完成", 1.0, "模型加载完成")
+            finally:
+                self._model_downloading = False
+
+    def _load_model_sync(self) -> None:
+        """Synchronously load the model (runs in thread)."""
+        # AutoModel will automatically download if models don't exist
+        self._model = AutoModel(
+            model=MODEL_IDS["model"],
+            vad_model=MODEL_IDS["vad"],
+            punc_model=MODEL_IDS["punc"],
+        )
 
     async def transcribe(
         self,
