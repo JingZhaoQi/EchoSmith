@@ -316,8 +316,6 @@ def _command_exists(cmd: str) -> bool:
     return shutil.which(cmd) is not None
 
 
-
-
 def _segments_to_srt(segments: list[dict]) -> str:
     lines = []
     for index, seg in enumerate(segments, start=1):
