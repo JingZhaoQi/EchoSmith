@@ -6,7 +6,7 @@ import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 
 class TaskStatus(str, Enum):
@@ -24,10 +24,10 @@ class TaskRecord:
     status: TaskStatus = TaskStatus.QUEUED
     progress: float = 0.0
     message: str = ""
-    result_text: Optional[str] = None
+    result_text: str | None = None
     segments: list[dict[str, Any]] = field(default_factory=list)
     source: dict[str, Any] = field(default_factory=dict)
-    error: Optional[str] = None
+    error: str | None = None
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     logs: list[dict[str, Any]] = field(default_factory=list)
@@ -65,13 +65,13 @@ class TaskStore:
         self,
         task_id: str,
         *,
-        status: Optional[TaskStatus] = None,
-        progress: Optional[float] = None,
-        message: Optional[str] = None,
-        result_text: Optional[str] = None,
-        segments: Optional[list[dict[str, Any]]] = None,
-        error: Optional[str] = None,
-        log: Optional[dict[str, Any]] = None,
+        status: TaskStatus | None = None,
+        progress: float | None = None,
+        message: str | None = None,
+        result_text: str | None = None,
+        segments: list[dict[str, Any]] | None = None,
+        error: str | None = None,
+        log: dict[str, Any] | None = None,
     ) -> TaskRecord:
         async with self._lock:
             record = self._tasks[task_id]
