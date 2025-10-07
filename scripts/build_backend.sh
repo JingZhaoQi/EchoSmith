@@ -17,7 +17,7 @@ pip install pyinstaller
 
 # Clean dist directory
 rm -rf "$DIST_DIR"
-mkdir -p "$DIST_DIR/backend"
+mkdir -p "$DIST_DIR"
 
 # Build standalone backend executable with PyInstaller
 cd "$BACKEND_DIR"
@@ -28,10 +28,10 @@ pyinstaller \
   --distpath "$DIST_DIR/backend" \
   --workpath "$DIST_DIR/build" \
   --specpath "$DIST_DIR" \
-  --add-data "__init__.py:." \
-  --add-data "app.py:." \
-  --add-data "asr_engine.py:." \
-  --add-data "task_store.py:." \
+  --hidden-import backend \
+  --hidden-import backend.app \
+  --hidden-import backend.asr_engine \
+  --hidden-import backend.task_store \
   __main__.py
 
 echo "Backend executable built at $DIST_DIR/backend/backend"
