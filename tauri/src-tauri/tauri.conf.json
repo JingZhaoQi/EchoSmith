@@ -5,9 +5,9 @@
   "identifier": "com.echosmith.app",
   "build": {
     "beforeBuildCommand": "",
-    "beforeDevCommand": "",
+    "beforeDevCommand": "pnpm -C ../frontend dev",
     "devUrl": "http://localhost:5173",
-    "frontendDist": "../../frontend/dist"
+    "frontendDist": "../frontend_resources"
   },
   "bundle": {
     "active": true,

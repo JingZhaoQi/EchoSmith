@@ -29,6 +29,8 @@ fn get_backend_config(state: State<BackendState>) -> BackendConfig {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .setup(|app| {
             let backend_state = spawn_backend(app.handle().clone())?;
             app.manage(backend_state);
@@ -50,7 +52,12 @@ fn main() {
 }
 
 fn spawn_backend(app_handle: tauri::AppHandle) -> Result<BackendState, Box<dyn std::error::Error>> {
-    let port = pick_unused_port().unwrap_or(5179);
+    // In development mode, use fixed port for Vite proxy; in production, pick dynamically
+    let port = if cfg!(debug_assertions) {
+        5179
+    } else {
+        pick_unused_port().unwrap_or(5179)
+    };
     let token: String = rand::thread_rng()
         .sample_iter(&Alphanumeric)
         .take(32)
@@ -114,16 +121,23 @@ fn get_backend_path(app_handle: &tauri::AppHandle) -> Result<PathBuf, Box<dyn st
     }
 
     // Fallback to development mode
+    // pnpm tauri dev runs from tauri/ directory, go up to project root
     let backend_dir = std::env::current_dir()?
-        .parent()
+        .parent()  // tauri -> project root
         .ok_or("Cannot find parent directory")?
-        .parent()
-        .ok_or("Cannot find grandparent directory")?
         .join("backend");
 
     if backend_dir.exists() {
+        eprintln!("[DEBUG] Found backend in development mode: {:?}", backend_dir);
         Ok(backend_dir)
     } else {
-        Err(format!("Backend not found. Tried paths: {:?}", possible_paths).into())
+        let error_msg = format!(
+            "Backend not found. Tried paths: {:?}\nDevelopment fallback: {:?}\nCurrent dir: {:?}",
+            possible_paths,
+            backend_dir,
+            std::env::current_dir()
+        );
+        eprintln!("[ERROR] {}", error_msg);
+        Err(error_msg.into())
     }
 }

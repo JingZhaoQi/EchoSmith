@@ -68,10 +68,38 @@ export function TaskStreamPanel(): JSX.Element {
 
   const cancelMutation = useMutation({
     mutationFn: async () => {
-      if (!activeTaskId) throw new Error("没有任务可清空");
+      if (!activeTaskId) {
+        console.error("❌ 没有任务可清空");
+        throw new Error("没有任务可清空");
+      }
       const taskToRemove = activeTaskId;
-      await cancelTask(taskToRemove);
+      console.log("🗑️  [Mutation] 调用清空 API:", taskToRemove);
+
+      try {
+        await cancelTask(taskToRemove);
+        console.log("✅ [Mutation] 清空 API 调用成功，准备移除任务");
+      } catch (error: any) {
+        // 如果是 404，说明任务已被删除，直接从本地移除即可
+        if (error.response?.status === 404) {
+          console.warn("⚠️  任务已不存在（404），直接从本地移除");
+        } else {
+          throw error;
+        }
+      }
+
       removeTask(taskToRemove);
+      console.log("✅ [Mutation] 任务已从本地移除");
+
+      // 清空后，取消选中任务
+      setActiveTask(null);
+      console.log("✅ [Mutation] 已取消任务选中");
+    },
+    onError: (error) => {
+      console.error("❌ [Mutation] 清空任务失败:", error);
+      window.alert("清空任务失败，请稍后再试");
+    },
+    onSuccess: () => {
+      console.log("🎉 [Mutation] 清空任务完成");
     }
   });
 
@@ -85,9 +113,11 @@ export function TaskStreamPanel(): JSX.Element {
       isTerminal,
       暂停按钮禁用: !activeTaskId || isPaused || isTerminal || pauseMutation.isPending,
       继续按钮禁用: !activeTaskId || !isPaused || isTerminal || resumeMutation.isPending,
+      清空按钮禁用: !activeTaskId || cancelMutation.isPending,
+      cancelMutationPending: cancelMutation.isPending,
       完整任务对象: activeTask
     });
-  }, [activeTaskId, currentStatus, isPaused, isRunning, isTerminal, pauseMutation.isPending, resumeMutation.isPending, activeTask]);
+  }, [activeTaskId, currentStatus, isPaused, isRunning, isTerminal, pauseMutation.isPending, resumeMutation.isPending, cancelMutation.isPending, activeTask]);
 
   return (
     <div>
