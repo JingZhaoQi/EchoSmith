@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
-import sys
 import tempfile
 import time
 import uuid
@@ -25,10 +24,10 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-if getattr(sys, "frozen", False):
+try:
     from asr_engine import ASREngine
     from task_store import TaskRecord, TaskStatus, task_store
-else:
+except ImportError:
     from .asr_engine import ASREngine
     from .task_store import TaskRecord, TaskStatus, task_store
 
