@@ -20,7 +20,7 @@ bash scripts/build_backend.sh
 # Step 2: Build frontend
 echo -e "${YELLOW}[2/6] Building frontend...${NC}"
 cd frontend
-npm run build
+pnpm run build
 # Copy logo to dist
 cp ../echo_logo.svg dist/
 cd ..
@@ -28,13 +28,13 @@ cd ..
 # Step 3: Copy backend to tauri/src-tauri for bundling
 echo -e "${YELLOW}[3/6] Preparing backend for bundling...${NC}"
 rm -rf tauri/src-tauri/backend
-mkdir -p tauri/src-tauri/backend
-cp tauri_backend_dist/backend/backend tauri/src-tauri/backend/
+# Copy entire backend directory (now it's a folder, not a single file)
+cp -r tauri_backend_dist/backend tauri/src-tauri/
 
-# Step 4: Copy frontend dist to tauri directory
+# Step 4: Copy frontend dist to tauri directory (as frontend_resources for Tauri config)
 echo -e "${YELLOW}[4/6] Copying frontend to tauri directory...${NC}"
-rm -rf tauri/dist
-cp -r frontend/dist tauri/dist
+rm -rf tauri/frontend_resources
+cp -r frontend/dist tauri/frontend_resources
 
 # Step 5: Build Tauri app
 echo -e "${YELLOW}[5/6] Building Tauri app...${NC}"

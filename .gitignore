@@ -109,6 +109,16 @@ release/
 *.rpm
 *.AppImage
 
+# TypeScript compiled files in frontend/src
+frontend/src/**/*.js
+frontend/tailwind.config.js
+
+# Backup files
+*.backup
+
+# Deprecated files
+*.deprecated
+
 # Python
 __pycache__/
 *.py[cod]
@@ -126,6 +136,7 @@ venv.bak/
 
 # FunASR models and cache
 models/
+models_cache/
 cache/
 *.model
 *.bin
@@ -154,5 +165,9 @@ temp/
 
 # Backend build output
 tauri_backend_dist/
+tauri/src-tauri/backend/*
+!tauri/src-tauri/backend/README.md
+tauri/src-tauri/frontend_resources/*
+!tauri/src-tauri/frontend_resources/README.md
 
 python

@@ -24,8 +24,14 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-from .asr_engine import ASREngine
-from .task_store import TaskRecord, TaskStatus, task_store
+# Support both development (relative import) and PyInstaller (absolute import)
+import sys
+if getattr(sys, 'frozen', False):
+    from asr_engine import ASREngine
+    from task_store import TaskRecord, TaskStatus, task_store
+else:
+    from .asr_engine import ASREngine
+    from .task_store import TaskRecord, TaskStatus, task_store
 
 
 class TaskControl:
@@ -60,11 +66,16 @@ LANGUAGE_FORM_FIELD = Form(default="zh")
 async def healthcheck() -> JSONResponse:
     ffmpeg_ok = _command_exists("ffmpeg")
     model_downloading = engine.is_downloading()
+    download_progress, download_message = engine.get_download_progress()
     model_cache_dir = engine.get_model_cache_dir()
+    models_ready = engine.has_model() or Path(model_cache_dir).exists()
     return JSONResponse(
         {
             "ffmpeg": ffmpeg_ok,
+            "models": models_ready,
             "model_downloading": model_downloading,
+            "download_progress": download_progress,
+            "download_message": download_message,
             "model_cache_dir": model_cache_dir,
             "status": "ok" if ffmpeg_ok else "degraded",
         }
@@ -77,6 +88,17 @@ def verify_token(request: Request) -> None:
     header = request.headers.get("Authorization", "")
     if header != f"Bearer {API_TOKEN}":
         raise HTTPException(status_code=401, detail="未授权")
+
+
+@app.post("/api/models/download")
+async def trigger_model_download(_: None = Depends(verify_token)) -> JSONResponse:
+    if engine.has_model():
+        return JSONResponse({"status": "already_exists"})
+    if engine.is_downloading():
+        return JSONResponse({"status": "already_downloading"})
+
+    asyncio.create_task(engine.ensure_model())
+    return JSONResponse({"status": "started"})
 
 
 @app.get("/api/tasks")
@@ -213,8 +235,7 @@ async def _run_task(task_id: str, source_info: dict, cleanup_paths: list[str]) -
             status = TaskStatus.PAUSED
         else:
             status = TaskStatus.RUNNING
-        loop.call_soon_threadsafe(
-            asyncio.create_task,
+        asyncio.run_coroutine_threadsafe(
             task_store.update_task(
                 task_id,
                 status=status,
@@ -228,12 +249,12 @@ async def _run_task(task_id: str, source_info: dict, cleanup_paths: list[str]) -
                     "progress": progress,
                 },
             ),
+            loop,
         )
 
     def model_download_cb(stage: str, progress: float, message: str) -> None:
         """Callback for model download progress."""
-        loop.call_soon_threadsafe(
-            asyncio.create_task,
+        asyncio.run_coroutine_threadsafe(
             task_store.update_task(
                 task_id,
                 status=TaskStatus.RUNNING,
@@ -247,6 +268,7 @@ async def _run_task(task_id: str, source_info: dict, cleanup_paths: list[str]) -
                     "progress": progress,
                 },
             ),
+            loop,
         )
 
     try:
@@ -269,14 +291,17 @@ async def _run_task(task_id: str, source_info: dict, cleanup_paths: list[str]) -
         )
 
         if control and control.cancelled:
-            await task_store.update_task(
+            updated = await task_store.update_task(
                 task_id,
                 status=TaskStatus.CANCELLED,
                 message="已取消",
                 log={"timestamp": time.time(), "type": "info", "message": "任务中途取消"},
             )
+            if updated is None:
+                # Task was deleted, exit gracefully
+                return
         else:
-            await task_store.update_task(
+            updated = await task_store.update_task(
                 task_id,
                 status=TaskStatus.COMPLETED,
                 progress=1.0,
@@ -285,14 +310,20 @@ async def _run_task(task_id: str, source_info: dict, cleanup_paths: list[str]) -
                 segments=[segment.__dict__ for segment in result.segments],
                 log={"timestamp": time.time(), "type": "info", "message": "任务完成"},
             )
+            if updated is None:
+                # Task was deleted, exit gracefully
+                return
     except Exception as exc:  # noqa: BLE001
-        await task_store.update_task(
+        updated = await task_store.update_task(
             task_id,
             status=TaskStatus.FAILED,
             message="失败",
             error=str(exc),
             log={"timestamp": time.time(), "type": "error", "message": str(exc)},
         )
+        if updated is None:
+            # Task was deleted, exit gracefully
+            return
     finally:
         for path in cleanup_paths:
             Path(path).unlink(missing_ok=True)
@@ -316,13 +347,110 @@ def _command_exists(cmd: str) -> bool:
     return shutil.which(cmd) is not None
 
 
+def _split_segment_text(text: str, max_chars: int = 40) -> list[str]:
+    """Split long text into smaller chunks respecting punctuation, then length."""
+    text = (text or "").strip()
+    if not text:
+        return []
+
+    # First split by sentence-ending punctuation
+    parts: list[str] = []
+    buf = ""
+    for ch in text:
+        buf += ch
+        if ch in "。！？!?；;，,":
+            parts.append(buf.strip())
+            buf = ""
+    if buf.strip():
+        parts.append(buf.strip())
+
+    # Flatten any overly long part into fixed-size chunks
+    final_parts: list[str] = []
+    for part in parts or [text]:
+        if len(part) <= max_chars:
+            final_parts.append(part)
+            continue
+        for i in range(0, len(part), max_chars):
+            final_parts.append(part[i : i + max_chars].strip())
+    return [p for p in final_parts if p]
+
+
+def _normalize_sub_durations(durations: list[int], target: int, min_duration: int) -> list[int]:
+    """Adjust durations to sum to target while enforcing min_duration."""
+    if not durations:
+        return []
+    durations = [max(min_duration, d) for d in durations]
+    current = sum(durations)
+    if current == 0:
+        return [target // len(durations)] * len(durations)
+
+    # Scale down or up to match target
+    scaled = [max(min_duration, int(d * target / current)) for d in durations]
+    diff = target - sum(scaled)
+    if diff != 0:
+        # Distribute remainder across items
+        for i in range(len(scaled)):
+            if diff == 0:
+                break
+            scaled[i] += 1 if diff > 0 else -1
+            diff += -1 if diff > 0 else 1
+    return scaled
+
+
+def _split_segment(seg: dict, max_chars: int = 40, max_duration_ms: int = 6000) -> list[dict]:
+    """Split a segment into smaller SRT-friendly pieces."""
+    start_ms = int(seg.get("start_ms", 0))
+    end_ms = int(seg.get("end_ms", start_ms))
+    text = seg.get("text", "") or ""
+    if end_ms <= start_ms:
+        # Fallback duration: 250ms per 10 chars, minimum 2s
+        end_ms = start_ms + max(2000, int(len(text) / 10 * 250))
+
+    duration = end_ms - start_ms
+    pieces = _split_segment_text(text, max_chars=max_chars)
+    if not pieces:
+        return []
+
+    # If already short enough and duration is acceptable, keep as-is
+    if len(pieces) == 1 and duration <= max_duration_ms and len(text) <= max_chars:
+        return [
+            {
+                "start_ms": start_ms,
+                "end_ms": end_ms,
+                "text": text,
+            }
+        ]
+
+    # Allocate durations proportionally to text length
+    weights = [len(p) for p in pieces]
+    total_weight = sum(weights) or 1
+    raw_durations = [max(1, int(duration * w / total_weight)) for w in weights]
+    sub_durations = _normalize_sub_durations(raw_durations, duration, min_duration=800)
+
+    sub_segments = []
+    cursor = start_ms
+    for piece, seg_dur in zip(pieces, sub_durations):
+        sub_segments.append(
+            {
+                "start_ms": cursor,
+                "end_ms": cursor + seg_dur,
+                "text": piece,
+            }
+        )
+        cursor += seg_dur
+    return sub_segments
+
+
 def _segments_to_srt(segments: list[dict]) -> str:
     lines = []
-    for index, seg in enumerate(segments, start=1):
-        start = _ms_to_timestamp(seg.get("start_ms", 0))
-        end = _ms_to_timestamp(seg.get("end_ms", 0))
-        text = seg.get("text", "")
-        lines.append(f"{index}\n{start} --> {end}\n{text}\n")
+    index = 1
+    for seg in segments:
+        for sub in _split_segment(seg):
+            start = _ms_to_timestamp(sub.get("start_ms", 0))
+            end = _ms_to_timestamp(sub.get("end_ms", 0))
+            text = sub.get("text", "")
+            lines.append(f"{index}\n{start} --> {end}\n{text}\n")
+            index += 1
     return "\n".join(lines)
 
 

@@ -73,9 +73,12 @@ class TaskStore:
         segments: list[dict[str, Any]] | None = None,
         error: str | None = None,
         log: dict[str, Any] | None = None,
-    ) -> TaskRecord:
+    ) -> TaskRecord | None:
         async with self._lock:
-            record = self._tasks[task_id]
+            record = self._tasks.get(task_id)
+            if record is None:
+                # Task was deleted, silently return None
+                return None
             if status is not None:
                 record.status = status
             if progress is not None:

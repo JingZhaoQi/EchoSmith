@@ -1,0 +1,11 @@
+"$schema" = "schemas/schema.json"
+
+[[permission]]
+identifier = "allow-get-backend-config"
+description = "Allows invoking the get_backend_config command"
+commands.allow = ["get_backend_config"]
+
+[[set]]
+identifier = "default"
+description = "Default permissions for the application"
+permissions = ["allow-get-backend-config"]

@@ -16,6 +16,15 @@ export function useTheme(): [Theme, (theme: Theme) => void] {
     const root = document.documentElement;
     const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
     const resolved = theme === "system" ? (prefersDark ? "dark" : "light") : theme;
+
+    // Update dark class for Tailwind
+    if (resolved === "dark") {
+      root.classList.add("dark");
+    } else {
+      root.classList.remove("dark");
+    }
+
+    // Keep data-theme for other purposes
     root.dataset.theme = resolved;
     window.localStorage.setItem(STORAGE_KEY, theme);
   }, [theme]);

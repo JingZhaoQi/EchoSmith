@@ -1,6 +1,4 @@
 fastapi>=0.110
 uvicorn[standard]>=0.29
-funasr>=1.1.5
-modelscope>=1.11
-soundfile>=0.12
+sherpa-onnx>=1.10.0
 python-multipart>=0.0.6

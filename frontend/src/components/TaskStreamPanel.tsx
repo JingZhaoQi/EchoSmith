@@ -1,42 +1,22 @@
 // Realtime task progress stream.
-import React from "react";
 import { useMutation } from "@tanstack/react-query";
-import { PauseIcon, PlayIcon, Trash2Icon } from "lucide-react";
+import { PauseIcon, PlayIcon, Trash2Icon, StopCircleIcon, XCircleIcon } from "lucide-react";
 
 import { Progress } from "./ui/progress";
 import { Card } from "./ui/card";
 import { Button } from "./ui/button";
 import { useTasksStore } from "../hooks/useTasksStore";
 import { cancelTask, pauseTask, resumeTask } from "../lib/api";
-
-const STATUS_LABELS: Record<string, string> = {
-  queued: "排队中",
-  running: "进行中",
-  paused: "暂停中",
-  completed: "已完成",
-  failed: "失败",
-  cancelled: "已清空"
-};
-
-function getSourceLabel(source?: Record<string, unknown>): string {
-  if (!source) return "";
-  const name = (source as { name?: unknown }).name;
-  if (typeof name === "string" && name.length > 0) {
-    return name;
-  }
-  const value = (source as { value?: unknown }).value;
-  if (typeof value === "string" && value.length > 0) {
-    return value;
-  }
-  return "";
-}
+import { STATUS_LABELS, getSourceLabel } from "../lib/constants";
 
 export function TaskStreamPanel(): JSX.Element {
-  const { tasks, activeTaskId, setActiveTask, removeTask } = useTasksStore((state) => ({
+  const { tasks, activeTaskId, setActiveTask, removeTask, clearAllTasks, resetUserClearedFlag } = useTasksStore((state) => ({
     tasks: state.tasks,
     activeTaskId: state.activeTaskId,
     setActiveTask: state.setActiveTask,
-    removeTask: state.removeTask
+    removeTask: state.removeTask,
+    clearAllTasks: state.clearAllTasks,
+    resetUserClearedFlag: state.resetUserClearedFlag
   }));
 
   const activeTask = activeTaskId ? tasks[activeTaskId] : undefined;
@@ -44,80 +24,110 @@ export function TaskStreamPanel(): JSX.Element {
   // 直接从后端状态派生，不需要本地 state
   const currentStatus = activeTask?.status;
   const isPaused = currentStatus === "paused";
-  const isRunning = currentStatus === "running" || currentStatus === "queued";
   const isTerminal = currentStatus === "completed" || currentStatus === "failed" || currentStatus === "cancelled";
   const progressPercent = Math.min(100, Math.max(0, Math.round((activeTask?.progress ?? 0) * 100)));
 
   const pauseMutation = useMutation({
     mutationFn: async () => {
       if (!activeTaskId) throw new Error("没有任务可暂停");
-      console.log("⏸️  [Mutation] 调用暂停 API:", activeTaskId);
       await pauseTask(activeTaskId);
-      console.log("✅ [Mutation] 暂停 API 调用成功");
     }
   });
 
   const resumeMutation = useMutation({
     mutationFn: async () => {
       if (!activeTaskId) throw new Error("没有任务可恢复");
-      console.log("▶️  [Mutation] 调用继续 API:", activeTaskId);
       await resumeTask(activeTaskId);
-      console.log("✅ [Mutation] 继续 API 调用成功");
     }
   });
 
   const cancelMutation = useMutation({
     mutationFn: async () => {
       if (!activeTaskId) {
-        console.error("❌ 没有任务可清空");
         throw new Error("没有任务可清空");
       }
       const taskToRemove = activeTaskId;
-      console.log("🗑️  [Mutation] 调用清空 API:", taskToRemove);
 
       try {
         await cancelTask(taskToRemove);
-        console.log("✅ [Mutation] 清空 API 调用成功，准备移除任务");
-      } catch (error: any) {
+      } catch (error: unknown) {
         // 如果是 404，说明任务已被删除，直接从本地移除即可
-        if (error.response?.status === 404) {
-          console.warn("⚠️  任务已不存在（404），直接从本地移除");
+        const status =
+          typeof error === "object" && error !== null && "response" in error
+            ? (error as { response?: { status?: number } }).response?.status
+            : undefined;
+        if (status === 404) {
+          console.warn("任务已不存在，直接从本地移除");
         } else {
           throw error;
         }
       }
 
       removeTask(taskToRemove);
-      console.log("✅ [Mutation] 任务已从本地移除");
 
       // 清空后，取消选中任务
       setActiveTask(null);
-      console.log("✅ [Mutation] 已取消任务选中");
     },
-    onError: (error) => {
-      console.error("❌ [Mutation] 清空任务失败:", error);
+    onError: () => {
       window.alert("清空任务失败，请稍后再试");
-    },
-    onSuccess: () => {
-      console.log("🎉 [Mutation] 清空任务完成");
     }
   });
 
-  // 调试日志（在所有变量定义之后）
-  React.useEffect(() => {
-    console.log("🔍 [TaskStreamPanel] 状态调试:", {
-      activeTaskId,
-      currentStatus,
-      isPaused,
-      isRunning,
-      isTerminal,
-      暂停按钮禁用: !activeTaskId || isPaused || isTerminal || pauseMutation.isPending,
-      继续按钮禁用: !activeTaskId || !isPaused || isTerminal || resumeMutation.isPending,
-      清空按钮禁用: !activeTaskId || cancelMutation.isPending,
-      cancelMutationPending: cancelMutation.isPending,
-      完整任务对象: activeTask
-    });
-  }, [activeTaskId, currentStatus, isPaused, isRunning, isTerminal, pauseMutation.isPending, resumeMutation.isPending, cancelMutation.isPending, activeTask]);
+  const stopAllMutation = useMutation({
+    mutationFn: async () => {
+      const allTaskIds = Object.keys(tasks);
+      if (allTaskIds.length === 0) {
+        throw new Error("没有任务可停止");
+      }
+
+      // 尝试取消所有任务
+      for (const taskId of allTaskIds) {
+        try {
+          await cancelTask(taskId);
+        } catch (error: unknown) {
+          // 忽略 404 错误（任务已被删除）
+          const status =
+            typeof error === "object" && error !== null && "response" in error
+              ? (error as { response?: { status?: number } }).response?.status
+              : undefined;
+          if (status !== 404) {
+            console.error(`Failed to cancel task ${taskId}:`, error);
+          }
+        }
+      }
+
+      // 一次性清空所有任务
+      clearAllTasks();
+
+      // 等待后端处理完成后，重置标志以允许后续更新
+      setTimeout(() => {
+        resetUserClearedFlag();
+      }, 5000); // 5秒后重置标志
+    },
+    onError: () => {
+      window.alert("停止所有任务失败，请稍后再试");
+      resetUserClearedFlag(); // 出错时也重置标志
+    }
+  });
+
+  const clearAllMutation = useMutation({
+    mutationFn: async () => {
+      // 触发全局清空事件
+      window.dispatchEvent(new CustomEvent("clearAllFiles"));
+
+      // 也清空任务列表
+      clearAllTasks();
+
+      // 重置标志
+      setTimeout(() => {
+        resetUserClearedFlag();
+      }, 1000);
+    },
+    onError: () => {
+      window.alert("清空失败，请稍后再试");
+      resetUserClearedFlag();
+    }
+  });
 
   return (
     <div>
@@ -150,7 +160,7 @@ export function TaskStreamPanel(): JSX.Element {
           </div>
           <span className="w-12 text-xs text-muted-foreground text-right">{progressPercent}%</span>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           <Button
             variant="secondary"
             size="sm"
@@ -176,7 +186,25 @@ export function TaskStreamPanel(): JSX.Element {
             disabled={!activeTaskId || cancelMutation.isPending}
             onClick={() => cancelMutation.mutate()}
           >
-            <Trash2Icon className="h-4 w-4" /> 清空
+            <XCircleIcon className="h-4 w-4" /> 停止并跳过当前任务
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            className="gap-1"
+            disabled={Object.keys(tasks).length === 0 || stopAllMutation.isPending}
+            onClick={() => stopAllMutation.mutate()}
+          >
+            <StopCircleIcon className="h-4 w-4" /> 停止所有任务
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            className="gap-1"
+            disabled={clearAllMutation.isPending}
+            onClick={() => clearAllMutation.mutate()}
+          >
+            <Trash2Icon className="h-4 w-4" /> 清空所有任务
           </Button>
         </div>
       </Card>

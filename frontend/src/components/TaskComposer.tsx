@@ -5,16 +5,8 @@ import { UploadIcon, PlayIcon, FileAudioIcon } from "lucide-react";
 
 import { Button } from "./ui/button";
 import { createTaskFromFile } from "../lib/api";
+import { STATUS_LABELS } from "../lib/constants";
 import { useTasksStore } from "../hooks/useTasksStore";
-
-const STATUS_LABELS: Record<string, string> = {
-  queued: "排队中",
-  running: "进行中",
-  paused: "暂停中",
-  completed: "已完成",
-  failed: "失败",
-  cancelled: "已清空"
-};
 
 export function TaskComposer(): JSX.Element {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -97,7 +89,7 @@ export function TaskComposer(): JSX.Element {
 
   return (
     <form
-      className="rounded-2xl border border-border bg-card/60 backdrop-blur-sm shadow-lg shadow-indigo-500/5 dark:shadow-indigo-900/20 hover:shadow-2xl hover:shadow-indigo-500/20 dark:hover:shadow-indigo-900/40 transition-shadow duration-300 p-6 flex flex-col gap-5 min-h-[420px]"
+      className="rounded-[20px] border border-black/[0.08] dark:border-white/[0.08] bg-white/90 dark:bg-zinc-900/90 backdrop-blur-2xl backdrop-saturate-150 shadow-[0_1px_2px_rgba(0,0,0,0.05),0_8px_16px_rgba(0,0,0,0.08)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.3),0_8px_24px_rgba(0,0,0,0.4)] hover:shadow-[0_1px_2px_rgba(0,0,0,0.05),0_12px_24px_rgba(0,0,0,0.12)] dark:hover:shadow-[0_1px_2px_rgba(0,0,0,0.3),0_12px_32px_rgba(0,0,0,0.5)] transition-all duration-300 ease-out p-6 flex flex-col gap-5 min-h-[420px]"
       onSubmit={handleSubmit}
     >
       <div>
@@ -106,7 +98,7 @@ export function TaskComposer(): JSX.Element {
       </div>
       <div className="space-y-4 flex-1">
         <div
-          className="flex flex-col items-center justify-center rounded-xl border border-dashed border-border bg-sky-200/70 hover:bg-sky-300/80 dark:bg-indigo-900/50 dark:hover:bg-indigo-900/60 transition-colors px-5 py-8 text-center cursor-pointer"
+          className="flex flex-col items-center justify-center rounded-[16px] border-2 border-dashed border-black/10 dark:border-white/10 bg-black/[0.02] dark:bg-white/[0.02] hover:bg-black/[0.04] dark:hover:bg-white/[0.04] hover:border-black/20 dark:hover:border-white/20 transition-all duration-200 px-5 py-10 text-center cursor-pointer group"
           onClick={() => fileInputRef.current?.click()}
           role="button"
           tabIndex={0}
@@ -116,9 +108,11 @@ export function TaskComposer(): JSX.Element {
             }
           }}
         >
-          <UploadIcon className="h-7 w-7 text-indigo-500 dark:text-indigo-400 mb-2" />
-          <p className="text-sm font-medium text-foreground">点击或拖拽音视频文件</p>
-          <p className="text-xs text-muted-foreground/90 dark:!text-white">支持 MP3 / WAV / M4A / MP4 / MOV 等常见格式</p>
+          <div className="mb-4 p-3 rounded-full bg-indigo-500/10 dark:bg-indigo-400/10 group-hover:bg-indigo-500/15 dark:group-hover:bg-indigo-400/15 transition-colors">
+            <UploadIcon className="h-7 w-7 text-indigo-600 dark:text-indigo-400" strokeWidth={2.5} />
+          </div>
+          <p className="text-sm font-semibold text-gray-900 dark:text-white mb-1">点击或拖拽音视频文件</p>
+          <p className="text-xs text-gray-500 dark:text-gray-400">支持 MP3 / WAV / M4A / MP4 / MOV 等常见格式</p>
           {selectedFileName && <p className="text-sm font-medium text-foreground mt-3">已选择：{selectedFileName}</p>}
           <input
             ref={fileInputRef}

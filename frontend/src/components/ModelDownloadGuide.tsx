@@ -1,6 +1,5 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { fetchHealth, triggerModelDownload } from "../lib/api";
-import { invoke } from "@tauri-apps/api/core";
 import { Button } from "./ui/button";
 import { Card } from "./ui/card";
 import { Progress } from "./ui/progress";
@@ -34,7 +33,9 @@ export function ModelDownloadGuide({ onComplete }: ModelDownloadGuideProps) {
         return;
       }
 
-      if (status !== "started") {
+      if (status === "already_downloading") {
+        setMessage("模型正在下载中…");
+      } else if (status !== "started") {
         setError(`下载未启动: ${status ?? "无响应"}`);
         setDownloading(false);
         return;
@@ -82,9 +83,13 @@ export function ModelDownloadGuide({ onComplete }: ModelDownloadGuideProps) {
         }
       }, 1000);
 
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("[ModelDownload] Start error:", err);
-      const errorMsg = err.response?.data?.detail || err.message || "下载失败，请检查网络连接";
+      const withDetail = err as { response?: { data?: { detail?: string } }; message?: string };
+      const errorMsg =
+        withDetail.response?.data?.detail ||
+        withDetail.message ||
+        "下载失败，请检查网络连接";
       setError(errorMsg);
       setDownloading(false);
     }
@@ -137,19 +142,19 @@ export function ModelDownloadGuide({ onComplete }: ModelDownloadGuideProps) {
         )}
 
         {error && (
-          <div className="space-y-4">
-            <div className="bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-900 rounded-lg p-4">
-              <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
-            </div>
-            <Button
-              onClick={startDownload}
-              className="w-full"
-              variant="outline"
-            >
-              重新下载
-            </Button>
+        <div className="space-y-4">
+          <div className="bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-900 rounded-lg p-4">
+            <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
           </div>
-        )}
+          <Button
+            onClick={startDownload}
+            className="w-full"
+            variant="secondary"
+          >
+            重新下载
+          </Button>
+        </div>
+      )}
       </Card>
     </div>
   );

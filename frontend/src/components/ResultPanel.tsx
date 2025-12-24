@@ -5,6 +5,7 @@ import { Button } from "./ui/button";
 import { Card } from "./ui/card";
 import type { TaskSnapshot, TaskStatus } from "../lib/api";
 import { exportTask } from "../lib/api";
+import { STATUS_LABELS } from "../lib/constants";
 import { useTasksStore } from "../hooks/useTasksStore";
 
 const FORMAT_LABELS: Array<{ format: "txt" | "srt" | "json"; label: string }> = [
@@ -12,15 +13,6 @@ const FORMAT_LABELS: Array<{ format: "txt" | "srt" | "json"; label: string }> = 
   { format: "srt", label: "导出 SRT" },
   { format: "json", label: "导出 JSON" }
 ];
-
-const STATUS_LABELS: Record<string, string> = {
-  queued: "排队中",
-  running: "进行中",
-  paused: "暂停中",
-  completed: "已完成",
-  failed: "失败",
-  cancelled: "已清空"
-};
 
 const EXPORTABLE_STATUSES: TaskStatus[] = ["paused", "completed", "failed", "cancelled"];
 const SENTENCE_REGEX = /[^。！？!?…\n]+[。！？!?…]?/gu;
@@ -211,26 +203,16 @@ export function ResultPanel(): JSX.Element {
       // Tauri 2.x 推荐使用 @tauri-apps/api/core 检测
       let isTauri = false;
       try {
-        const { invoke } = await import("@tauri-apps/api/core");
-        // 如果能导入 invoke，说明是 Tauri 环境
+        await import("@tauri-apps/api/core");
         isTauri = true;
       } catch {
         isTauri = false;
       }
-      console.log("🌐 环境检测: isTauri =", isTauri);
 
       if (isTauri) {
-        // 使用 Tauri 文件保存对话框
-        console.log("🔍 检测到 Tauri 环境，准备打开文件保存对话框");
         try {
-          console.log("📦 导入 @tauri-apps/plugin-dialog...");
           const { save } = await import("@tauri-apps/plugin-dialog");
-          console.log("📦 导入 @tauri-apps/plugin-fs...");
           const { writeTextFile } = await import("@tauri-apps/plugin-fs");
-          console.log("✅ Tauri 插件加载成功");
-
-          const defaultFilename = toDownloadName(task, format);
-          console.log("📁 默认文件名:", defaultFilename);
 
           const formatNames: Record<string, string> = {
             txt: "文本文件",
@@ -240,7 +222,7 @@ export function ResultPanel(): JSX.Element {
 
           const filePath = await save({
             title: `保存${formatNames[format] || "文件"}`,
-            defaultPath: defaultFilename,
+            defaultPath: toDownloadName(task, format),
             filters: [
               {
                 name: formatNames[format] || format.toUpperCase(),
@@ -249,16 +231,11 @@ export function ResultPanel(): JSX.Element {
             ]
           });
 
-          console.log("💾 用户选择的路径:", filePath);
-
           if (filePath) {
             await writeTextFile(filePath, content);
-            console.log(`✅ 文件已保存到: ${filePath}`);
-          } else {
-            console.log("ℹ️  用户取消了保存");
           }
         } catch (tauriError) {
-          console.error("❌ Tauri 文件保存失败:", tauriError);
+          console.error("Tauri 文件保存失败:", tauriError);
           throw tauriError;
         }
       } else {
