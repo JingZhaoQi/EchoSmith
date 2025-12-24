@@ -7,7 +7,7 @@
 
   [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
   [![Platform](https://img.shields.io/badge/platform-macOS%20(Apple%20Silicon)-blue)](https://github.com/JingZhaoQi/EchoSmith/releases)
-  [![Version](https://img.shields.io/badge/version-0.1.0-green)](https://github.com/JingZhaoQi/EchoSmith/releases)
+  [![Version](https://img.shields.io/badge/version-1.0.0-green)](https://github.com/JingZhaoQi/EchoSmith/releases)
 
 </div>
 
