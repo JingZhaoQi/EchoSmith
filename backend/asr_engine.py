@@ -39,14 +39,18 @@ class TranscriptionResult:
 
 ProgressCallback = Callable[[float, str, str], None]
 
-SENTENCE_PATTERN = re.compile(r"[^。！？!?…\n]+[。！？!?…]+|[^。！？!?…\n]+", re.UNICODE)
+SENTENCE_PATTERN = re.compile(
+    r"[^。！？!?…\n]+[。！？!?…]+|[^。！？!?…\n]+", re.UNICODE
+)
 
 
 def _split_sentences(text: str) -> list[str]:
     """Split text into sentences while keeping ending punctuation."""
     if not text:
         return []
-    sentences = [segment.strip() for segment in SENTENCE_PATTERN.findall(text) if segment.strip()]
+    sentences = [
+        segment.strip() for segment in SENTENCE_PATTERN.findall(text) if segment.strip()
+    ]
     return sentences
 
 
@@ -75,7 +79,7 @@ class ASREngine:
         import sys
 
         # If running from PyInstaller bundle, use bundled models
-        if getattr(sys, 'frozen', False):
+        if getattr(sys, "frozen", False):
             bundle_dir = Path(sys._MEIPASS)  # type: ignore
             bundled_models = bundle_dir / "models_cache" / "sherpa-onnx"
             if bundled_models.exists():
@@ -91,7 +95,9 @@ class ASREngine:
         """Return whether the model has been loaded."""
         return self._recognizer is not None
 
-    def _report_download_progress(self, stage: str, progress: float, message: str) -> None:
+    def _report_download_progress(
+        self, stage: str, progress: float, message: str
+    ) -> None:
         """Record and forward model download progress."""
         self._download_progress = progress
         self._download_message = message
@@ -139,8 +145,7 @@ class ASREngine:
 
         if not os.path.exists(model_path):
             raise RuntimeError(
-                f"模型文件不存在: {model_path}\n"
-                f"请先下载模型到 {model_dir}"
+                f"模型文件不存在: {model_path}\n" f"请先下载模型到 {model_dir}"
             )
 
         if not os.path.exists(tokens_path):
@@ -194,8 +199,11 @@ class ASREngine:
         if pause_event is not None:
             while not pause_event.is_set():
                 if cancelled_checker and cancelled_checker():
-                    return TranscriptionResult(text="", segments=[], duration_ms=duration_ms)
+                    return TranscriptionResult(
+                        text="", segments=[], duration_ms=duration_ms
+                    )
                 import time
+
                 time.sleep(0.1)
 
         # Convert audio to 16kHz mono WAV if needed
@@ -228,6 +236,7 @@ class ASREngine:
                         if cancelled_checker and cancelled_checker():
                             break
                         import time
+
                         time.sleep(0.1)
 
                 start_idx = chunk_idx * chunk_size
@@ -239,7 +248,9 @@ class ASREngine:
                 progress = 0.1 + 0.8 * (chunk_idx / num_chunks)
                 if progress_cb:
                     partial_text = " ".join(all_texts)
-                    progress_cb(progress, f"转写中 {chunk_idx + 1}/{num_chunks}", partial_text)
+                    progress_cb(
+                        progress, f"转写中 {chunk_idx + 1}/{num_chunks}", partial_text
+                    )
 
                 # Create stream and decode this chunk
                 stream = self._recognizer.create_stream()
@@ -252,7 +263,9 @@ class ASREngine:
                     all_texts.append(chunk_text)
 
                     # Create segments for this chunk
-                    chunk_segments = self._create_segments(chunk_text, chunk_duration_ms)
+                    chunk_segments = self._create_segments(
+                        chunk_text, chunk_duration_ms
+                    )
                     for seg in chunk_segments:
                         seg.index = len(all_segments)
                         seg.start_ms += current_offset_ms
@@ -285,7 +298,7 @@ class ASREngine:
         # If already a WAV file, check format
         if audio_path.suffix.lower() == ".wav":
             try:
-                with wave.open(str(audio_path), 'rb') as wf:
+                with wave.open(str(audio_path), "rb") as wf:
                     if wf.getnchannels() == 1 and wf.getframerate() == 16000:
                         return audio_path
             except Exception:
@@ -293,13 +306,20 @@ class ASREngine:
 
         # Convert using ffmpeg
         import tempfile
+
         tmp_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
         tmp_path = Path(tmp_file.name)
         tmp_file.close()
 
         cmd = [
-            "ffmpeg", "-y", "-i", str(audio_path),
-            "-ac", "1", "-ar", "16000",
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(audio_path),
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
             str(tmp_path),
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
@@ -310,15 +330,16 @@ class ASREngine:
 
     def _read_wav(self, wav_path: Path) -> tuple[list[float], int]:
         """Read WAV file and return samples as float list."""
-        with wave.open(str(wav_path), 'rb') as wf:
+        with wave.open(str(wav_path), "rb") as wf:
             sample_rate = wf.getframerate()
             num_frames = wf.getnframes()
             raw_data = wf.readframes(num_frames)
 
             # Convert to float samples
             import struct
+
             num_samples = len(raw_data) // 2
-            samples = struct.unpack(f'{num_samples}h', raw_data)
+            samples = struct.unpack(f"{num_samples}h", raw_data)
             samples = [s / 32768.0 for s in samples]
 
             return samples, sample_rate
@@ -347,12 +368,14 @@ class ASREngine:
             if i == len(sentences) - 1:
                 end_ms = duration_ms
 
-            segments.append(Segment(
-                index=i,
-                start_ms=current_ms,
-                end_ms=end_ms,
-                text=sentence,
-            ))
+            segments.append(
+                Segment(
+                    index=i,
+                    start_ms=current_ms,
+                    end_ms=end_ms,
+                    text=sentence,
+                )
+            )
             current_ms = end_ms
 
         return segments

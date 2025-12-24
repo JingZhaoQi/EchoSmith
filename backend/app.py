@@ -26,7 +26,8 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 
 # Support both development (relative import) and PyInstaller (absolute import)
 import sys
-if getattr(sys, 'frozen', False):
+
+if getattr(sys, "frozen", False):
     from asr_engine import ASREngine
     from task_store import TaskRecord, TaskStatus, task_store
 else:
@@ -129,7 +130,9 @@ async def create_task(
     try:
         saved_path = await _save_upload(file, task_id)
         cleanup_paths.append(saved_path)
-        source_info.update({"type": "upload", "name": file.filename, "path": str(saved_path)})
+        source_info.update(
+            {"type": "upload", "name": file.filename, "path": str(saved_path)}
+        )
 
         record = TaskRecord(id=task_id, status=TaskStatus.QUEUED, source=source_info)
         await task_store.create_task(record)
@@ -295,7 +298,11 @@ async def _run_task(task_id: str, source_info: dict, cleanup_paths: list[str]) -
                 task_id,
                 status=TaskStatus.CANCELLED,
                 message="已取消",
-                log={"timestamp": time.time(), "type": "info", "message": "任务中途取消"},
+                log={
+                    "timestamp": time.time(),
+                    "type": "info",
+                    "message": "任务中途取消",
+                },
             )
             if updated is None:
                 # Task was deleted, exit gracefully
@@ -375,7 +382,9 @@ def _split_segment_text(text: str, max_chars: int = 40) -> list[str]:
     return [p for p in final_parts if p]
 
 
-def _normalize_sub_durations(durations: list[int], target: int, min_duration: int) -> list[int]:
+def _normalize_sub_durations(
+    durations: list[int], target: int, min_duration: int
+) -> list[int]:
     """Adjust durations to sum to target while enforcing min_duration."""
     if not durations:
         return []
@@ -397,7 +406,9 @@ def _normalize_sub_durations(durations: list[int], target: int, min_duration: in
     return scaled
 
 
-def _split_segment(seg: dict, max_chars: int = 40, max_duration_ms: int = 6000) -> list[dict]:
+def _split_segment(
+    seg: dict, max_chars: int = 40, max_duration_ms: int = 6000
+) -> list[dict]:
     """Split a segment into smaller SRT-friendly pieces."""
     start_ms = int(seg.get("start_ms", 0))
     end_ms = int(seg.get("end_ms", start_ms))
@@ -462,7 +473,9 @@ def _ms_to_timestamp(ms: int) -> str:
 
 
 @app.get("/api/tasks/{task_id}/export")
-async def export_task(task_id: str, format: str = "txt", _: None = Depends(verify_token)):
+async def export_task(
+    task_id: str, format: str = "txt", _: None = Depends(verify_token)
+):
     try:
         record = await task_store.get_task(task_id)
     except KeyError as exc:
