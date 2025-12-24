@@ -5,27 +5,16 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import sys
 import tempfile
 import time
 import uuid
 from pathlib import Path
 
-from fastapi import (
-    Depends,
-    FastAPI,
-    File,
-    Form,
-    HTTPException,
-    Request,
-    UploadFile,
-    WebSocket,
-    WebSocketDisconnect,
-)
+from fastapi import (Depends, FastAPI, File, Form, HTTPException, Request,
+                     UploadFile, WebSocket, WebSocketDisconnect)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
-
-# Support both development (relative import) and PyInstaller (absolute import)
-import sys
 
 if getattr(sys, "frozen", False):
     from asr_engine import ASREngine
