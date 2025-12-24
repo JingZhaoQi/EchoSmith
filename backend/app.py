@@ -62,20 +62,36 @@ LANGUAGE_FORM_FIELD = Form(default="zh")
 
 @app.get("/api/health")
 async def healthcheck() -> JSONResponse:
+    import sys
+
     ffmpeg_ok = _command_exists("ffmpeg")
+    ffmpeg_path = shutil.which("ffmpeg")
     model_downloading = engine.is_downloading()
     download_progress, download_message = engine.get_download_progress()
     model_cache_dir = engine.get_model_cache_dir()
     models_ready = engine.has_model() or Path(model_cache_dir).exists()
+
+    # Debug info for bundled ffmpeg
+    debug_info = {}
+    if getattr(sys, "frozen", False):
+        bundle_dir = Path(sys._MEIPASS)  # type: ignore
+        bundled_ffmpeg_dir = bundle_dir / "ffmpeg_bin"
+        debug_info["bundle_dir"] = str(bundle_dir)
+        debug_info["ffmpeg_bin_exists"] = bundled_ffmpeg_dir.exists()
+        if bundled_ffmpeg_dir.exists():
+            debug_info["ffmpeg_bin_contents"] = [f.name for f in bundled_ffmpeg_dir.iterdir()]
+
     return JSONResponse(
         {
             "ffmpeg": ffmpeg_ok,
+            "ffmpeg_path": ffmpeg_path,
             "models": models_ready,
             "model_downloading": model_downloading,
             "download_progress": download_progress,
             "download_message": download_message,
             "model_cache_dir": model_cache_dir,
             "status": "ok" if ffmpeg_ok else "degraded",
+            "debug": debug_info,
         }
     )
 
