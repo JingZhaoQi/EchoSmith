@@ -50,6 +50,45 @@ if (Test-Path $SherpaModelSrc) {
     Write-Host "Please run: python scripts/download_models.py first"
 }
 
+# Prepare ffmpeg binaries
+$FfmpegDir = Join-Path $Root "ffmpeg_bin"
+if (Test-Path $FfmpegDir) {
+    Remove-Item -Recurse -Force $FfmpegDir
+}
+New-Item -ItemType Directory -Path $FfmpegDir -Force | Out-Null
+
+Write-Host "=== Bundling ffmpeg ==="
+# Try to find ffmpeg from PATH (installed via choco)
+$FfmpegPath = Get-Command ffmpeg -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
+$FfprobePath = Get-Command ffprobe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
+
+if ($FfmpegPath -and $FfprobePath) {
+    Write-Host "Found ffmpeg at: $FfmpegPath"
+    Write-Host "Found ffprobe at: $FfprobePath"
+    Copy-Item $FfmpegPath $FfmpegDir
+    Copy-Item $FfprobePath $FfmpegDir
+    Get-ChildItem $FfmpegDir
+} else {
+    Write-Host "WARNING: ffmpeg/ffprobe not found, downloading..."
+    # Download static ffmpeg for Windows
+    $FfmpegUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+    $ZipPath = Join-Path $FfmpegDir "ffmpeg.zip"
+
+    Invoke-WebRequest -Uri $FfmpegUrl -OutFile $ZipPath
+    Expand-Archive -Path $ZipPath -DestinationPath $FfmpegDir -Force
+
+    # Find and move binaries
+    $ExtractedDir = Get-ChildItem $FfmpegDir -Directory | Select-Object -First 1
+    if ($ExtractedDir) {
+        $BinDir = Join-Path $ExtractedDir.FullName "bin"
+        Copy-Item (Join-Path $BinDir "ffmpeg.exe") $FfmpegDir
+        Copy-Item (Join-Path $BinDir "ffprobe.exe") $FfmpegDir
+        Remove-Item $ExtractedDir.FullName -Recurse -Force
+    }
+    Remove-Item $ZipPath -Force
+    Get-ChildItem $FfmpegDir
+}
+
 # Build standalone backend executable with PyInstaller
 Set-Location $Backend
 
@@ -57,7 +96,12 @@ Set-Location $Backend
 $AddDataArgs = @()
 $ModelsCacheParent = Join-Path $Root "models_cache"
 if (Test-Path $ModelsCache) {
-    $AddDataArgs = @("--add-data", "$ModelsCacheParent;models_cache")
+    $AddDataArgs += @("--add-data", "$ModelsCacheParent;models_cache")
+}
+
+# Add ffmpeg binaries
+if ((Test-Path $FfmpegDir) -and (Test-Path (Join-Path $FfmpegDir "ffmpeg.exe"))) {
+    $AddDataArgs += @("--add-data", "$FfmpegDir;ffmpeg_bin")
 }
 
 $PyInstallerArgs = @(
@@ -83,3 +127,4 @@ Remove-Item -Recurse -Force $TempVenv
 Write-Host ""
 Write-Host "=== Backend build complete ==="
 Write-Host "Output: $BuildOutput\backend\"
+Get-ChildItem (Join-Path $BuildOutput "backend")

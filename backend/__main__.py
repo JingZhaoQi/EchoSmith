@@ -16,19 +16,27 @@ if getattr(sys, "frozen", False):
         os.environ["MODELSCOPE_CACHE"] = str(bundled_models)
         print(f"[INIT] Set MODELSCOPE_CACHE to: {bundled_models}")
 
-    # Add common macOS binary paths to PATH for ffmpeg/ffprobe
-    # This is needed because macOS apps don't inherit shell PATH
+    # Check for bundled ffmpeg
+    bundled_ffmpeg = bundle_dir / "ffmpeg_bin"
     current_path = os.environ.get("PATH", "")
-    additional_paths = [
-        "/opt/homebrew/bin",  # Homebrew on Apple Silicon
-        "/usr/local/bin",  # Homebrew on Intel Macs
-        "/usr/bin",
-        "/bin",
-    ]
-    new_paths = [p for p in additional_paths if p not in current_path.split(":")]
-    if new_paths:
-        os.environ["PATH"] = ":".join(new_paths) + ":" + current_path
-        print(f"[INIT] Enhanced PATH with: {', '.join(new_paths)}")
+
+    if bundled_ffmpeg.exists():
+        # Use bundled ffmpeg first
+        os.environ["PATH"] = str(bundled_ffmpeg) + os.pathsep + current_path
+        print(f"[INIT] Using bundled ffmpeg from: {bundled_ffmpeg}")
+    else:
+        # Fall back to system PATH with common locations
+        additional_paths = [
+            "/opt/homebrew/bin",  # Homebrew on Apple Silicon
+            "/usr/local/bin",  # Homebrew on Intel Macs
+            "/usr/bin",
+            "/bin",
+        ]
+        sep = os.pathsep
+        new_paths = [p for p in additional_paths if p not in current_path.split(sep)]
+        if new_paths:
+            os.environ["PATH"] = sep.join(new_paths) + sep + current_path
+            print(f"[INIT] Enhanced PATH with: {', '.join(new_paths)}")
 
 # Handle both direct execution and PyInstaller packaging
 if getattr(sys, "frozen", False):
