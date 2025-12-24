@@ -1,0 +1,15 @@
+[tool.isort]
+profile = "black"
+known_first_party = ["asr_engine", "task_store", "app"]
+line_length = 88
+
+[tool.black]
+line-length = 88
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]
