@@ -2,16 +2,16 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "EchoSmith",
   "version": "0.1.0",
-  "identifier": "com.echosmith.app",
+  "identifier": "com.jingzhaoqi.echosmith",
   "build": {
     "beforeBuildCommand": "",
-    "beforeDevCommand": "pnpm -C ../frontend dev",
+    "beforeDevCommand": "pnpm -C ../../frontend dev",
     "devUrl": "http://localhost:5173",
-    "frontendDist": "../frontend_resources"
+    "frontendDist": "../../frontend/dist"
   },
   "bundle": {
     "active": true,
-    "targets": ["dmg"],
+    "targets": ["dmg", "msi", "nsis"],
     "resources": ["backend"],
     "icon": [
       "icons/32x32.png",

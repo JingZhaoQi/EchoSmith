@@ -26,23 +26,18 @@ cp ../echo_logo.svg dist/
 cd ..
 
 # Step 3: Copy backend to tauri/src-tauri for bundling
-echo -e "${YELLOW}[3/6] Preparing backend for bundling...${NC}"
+echo -e "${YELLOW}[3/4] Preparing backend for bundling...${NC}"
 rm -rf tauri/src-tauri/backend
 # Copy entire backend directory (now it's a folder, not a single file)
 cp -r tauri_backend_dist/backend tauri/src-tauri/
 
-# Step 4: Copy frontend dist to tauri directory (as frontend_resources for Tauri config)
-echo -e "${YELLOW}[4/6] Copying frontend to tauri directory...${NC}"
-rm -rf tauri/frontend_resources
-cp -r frontend/dist tauri/frontend_resources
-
-# Step 5: Build Tauri app
-echo -e "${YELLOW}[5/6] Building Tauri app...${NC}"
+# Step 4: Build Tauri app
+echo -e "${YELLOW}[4/4] Building Tauri app...${NC}"
 cd tauri
 npm run build
 
-# Step 6: Find and report DMG location
-echo -e "${YELLOW}[6/6] Locating built DMG...${NC}"
+# Find and report DMG location
+echo -e "${YELLOW}Locating built DMG...${NC}"
 DMG_FILE=$(ls -t src-tauri/target/release/bundle/dmg/*.dmg 2>/dev/null | head -1)
 
 if [ -z "$DMG_FILE" ]; then
