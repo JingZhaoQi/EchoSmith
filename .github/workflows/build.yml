@@ -58,14 +58,27 @@ jobs:
           pip install -r backend/requirements.txt
           pip install pyinstaller
 
-      - name: Build backend distribution
+      - name: Download ASR models
+        run: |
+          python scripts/download_models.py
+
+      - name: Build backend distribution (macOS)
+        if: matrix.platform == 'macos-latest'
+        run: |
+          bash scripts/build_backend.sh
+
+      - name: Build backend distribution (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          .\scripts\build_backend.ps1
+
+      - name: Debug backend output
         shell: bash
         run: |
-          if [ "$RUNNER_OS" == "Windows" ]; then
-            powershell -ExecutionPolicy Bypass -File scripts/build_backend.ps1
-          else
-            bash scripts/build_backend.sh
-          fi
+          echo "=== Backend build output ==="
+          ls -la tauri_backend_dist/ || echo "tauri_backend_dist not found"
+          ls -la tauri_backend_dist/backend/ || echo "tauri_backend_dist/backend not found"
 
       - name: Install frontend dependencies
         working-directory: frontend
@@ -87,15 +100,21 @@ jobs:
         if: matrix.platform == 'macos-latest'
         shell: bash
         run: |
-          mkdir -p tauri/src-tauri/backend
-          cp tauri_backend_dist/backend/backend tauri/src-tauri/backend/
+          rm -rf tauri/src-tauri/backend
+          cp -r tauri_backend_dist/backend tauri/src-tauri/
+          echo "=== Backend bundle contents ==="
+          ls -la tauri/src-tauri/backend/
+          du -sh tauri/src-tauri/backend/
 
       - name: Prepare backend for bundling (Windows)
         if: matrix.platform == 'windows-latest'
         shell: bash
         run: |
-          mkdir -p tauri/src-tauri/backend
-          cp tauri_backend_dist/backend/backend.exe tauri/src-tauri/backend/
+          rm -rf tauri/src-tauri/backend
+          cp -r tauri_backend_dist/backend tauri/src-tauri/
+          echo "=== Backend bundle contents ==="
+          ls -la tauri/src-tauri/backend/
+          du -sh tauri/src-tauri/backend/
 
       - name: Build Tauri app
         working-directory: tauri
