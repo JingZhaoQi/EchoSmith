@@ -61,6 +61,10 @@ function AppShell(): JSX.Element {
     if (health?.status === "ok") {
       return "后端在线";
     }
+    // 显示具体缺少什么
+    if (health && !health.ffmpeg) {
+      return "缺少 ffmpeg（brew install ffmpeg）";
+    }
     return "后端降级";
   })();
 
