@@ -177,7 +177,7 @@ def download_models(cache_dir: Path) -> None:
                 f"Contents: {list(temp_path.iterdir())}"
             )
 
-    print("\n✅ Models downloaded successfully!")
+    print("\n[OK] Models downloaded successfully!")
     print(f"Cache directory: {cache_dir}")
 
     # List downloaded files
@@ -221,5 +221,5 @@ if __name__ == "__main__":
     try:
         download_models(cache_dir)
     except Exception as e:
-        print(f"\n❌ Error downloading models: {e}", file=sys.stderr)
+        print(f"\n[ERROR] Error downloading models: {e}", file=sys.stderr)
         sys.exit(1)
