@@ -101,6 +101,7 @@ jobs:
       - name: Create Universal Binary DMG
         run: |
           mkdir -p tauri/src-tauri/target/universal-apple-darwin/release/bundle/dmg
+          mkdir -p tauri/src-tauri/target/universal-apple-darwin/release/bundle/macos
           
           X86_APP="tauri/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/EchoSmith.app"
           ARM_APP="tauri/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/EchoSmith.app"
