@@ -31,9 +31,23 @@ New-Item -ItemType Directory -Path $BuildOutput -Force | Out-Null
 
 # Prepare models cache directory (only INT8 model + tokens)
 $ModelsCache = Join-Path $Root "models_cache\sherpa-onnx"
-$SherpaModelSrc = Join-Path $env:USERPROFILE ".cache\sherpa-onnx\sense-voice"
 
-if (Test-Path $SherpaModelSrc) {
+# Try multiple possible model locations (download_models.py uses LOCALAPPDATA on Windows)
+$PossibleModelPaths = @(
+    (Join-Path $env:LOCALAPPDATA "sherpa-onnx\sense-voice"),
+    (Join-Path $env:USERPROFILE ".cache\sherpa-onnx\sense-voice"),
+    (Join-Path $env:APPDATA "sherpa-onnx\sense-voice")
+)
+
+$SherpaModelSrc = $null
+foreach ($path in $PossibleModelPaths) {
+    if (Test-Path $path) {
+        $SherpaModelSrc = $path
+        break
+    }
+}
+
+if ($SherpaModelSrc) {
     Write-Host "Found sherpa-onnx models at: $SherpaModelSrc"
     if (Test-Path $ModelsCache) {
         Remove-Item -Recurse -Force $ModelsCache
