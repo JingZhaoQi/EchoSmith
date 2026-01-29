@@ -9,9 +9,6 @@ on:
 permissions:
   contents: write
 
-# NOTE: Apple signing env vars are only set in specific steps that need them
-# to prevent Tauri from attempting certificate import when secrets are empty
-
 jobs:
   build-macos:
     runs-on: macos-latest
@@ -56,13 +53,7 @@ jobs:
 
       - name: Build backend distribution (Universal Binary)
         run: |
-          # Build backend - PyInstaller will create native binary
           bash scripts/build_backend.sh
-          
-          # Note: For true Universal Binary support, you may need to:
-          # 1. Build on both x86_64 and arm64 runners
-          # 2. Use lipo to combine binaries
-          # For now, we build native binary for the runner architecture
 
       - name: Debug backend output
         run: |
@@ -93,41 +84,9 @@ jobs:
           ls -la tauri/src-tauri/backend/
           du -sh tauri/src-tauri/backend/
 
-      - name: Import Apple signing certificate
-        if: ${{ secrets.APPLE_CERTIFICATE != '' }}
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-        run: |
-          # Create temporary keychain
-          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
-          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
-          
-          # Create keychain
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          
-          # Import certificate
-          echo "$APPLE_CERTIFICATE" | base64 --decode > $RUNNER_TEMP/certificate.p12
-          security import $RUNNER_TEMP/certificate.p12 \
-            -P "$APPLE_CERTIFICATE_PASSWORD" \
-            -A -t cert -f pkcs12 \
-            -k "$KEYCHAIN_PATH"
-          
-          # Set keychain as default
-          security list-keychain -d user -s "$KEYCHAIN_PATH"
-          
-          # Allow codesign to access keychain
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          
-          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> $GITHUB_ENV
-          echo "HAS_SIGNING_CERT=true" >> $GITHUB_ENV
-
       - name: Build Tauri app (x86_64)
         working-directory: tauri
         env:
-          # Disable code signing - signing happens after universal binary creation
           APPLE_SIGNING_IDENTITY: "-"
         run: |
           npm run build -- --target x86_64-apple-darwin --bundles app
@@ -135,21 +94,19 @@ jobs:
       - name: Build Tauri app (aarch64)
         working-directory: tauri
         env:
-          # Disable code signing - signing happens after universal binary creation
           APPLE_SIGNING_IDENTITY: "-"
         run: |
           npm run build -- --target aarch64-apple-darwin --bundles app
 
       - name: Create Universal Binary DMG
         run: |
-          # Create universal binary using lipo
           mkdir -p tauri/src-tauri/target/universal-apple-darwin/release/bundle/dmg
           
           X86_APP="tauri/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/EchoSmith.app"
           ARM_APP="tauri/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/EchoSmith.app"
           UNIVERSAL_APP="tauri/src-tauri/target/universal-apple-darwin/release/bundle/macos/EchoSmith.app"
           
-          # Copy ARM app as base (has correct structure)
+          # Copy ARM app as base
           cp -R "$ARM_APP" "$UNIVERSAL_APP"
           
           # Create universal binary for main executable
@@ -161,37 +118,16 @@ jobs:
           echo "Universal binary created:"
           file "$UNIVERSAL_APP/Contents/MacOS/EchoSmith"
 
-      - name: Sign Universal Binary (if certificate available)
-        if: env.HAS_SIGNING_CERT == 'true'
-        env:
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-        run: |
-          UNIVERSAL_APP="tauri/src-tauri/target/universal-apple-darwin/release/bundle/macos/EchoSmith.app"
-          
-          # Sign the app
-          codesign --force --deep --sign "$APPLE_SIGNING_IDENTITY" \
-            --options runtime \
-            --entitlements tauri/src-tauri/entitlements.plist \
-            "$UNIVERSAL_APP"
-          
-          # Verify signature
-          codesign --verify --verbose "$UNIVERSAL_APP"
-          
-          echo "App signed successfully"
-
       - name: Create DMG
         run: |
           UNIVERSAL_APP="tauri/src-tauri/target/universal-apple-darwin/release/bundle/macos/EchoSmith.app"
           DMG_OUTPUT="tauri/src-tauri/target/universal-apple-darwin/release/bundle/dmg"
           
-          # Create DMG using create-dmg or hdiutil
           VERSION=$(grep '"version"' tauri/src-tauri/tauri.conf.json | head -1 | sed 's/.*: "\(.*\)".*/\1/')
           DMG_NAME="EchoSmith_${VERSION}_universal.dmg"
           
-          # Create temporary DMG folder
           mkdir -p "$DMG_OUTPUT"
           
-          # Simple DMG creation with hdiutil
           hdiutil create -volname "EchoSmith" \
             -srcfolder "$UNIVERSAL_APP" \
             -ov -format UDZO \
@@ -200,65 +136,11 @@ jobs:
           echo "DMG created: $DMG_OUTPUT/$DMG_NAME"
           ls -la "$DMG_OUTPUT/"
 
-      - name: Sign DMG (if certificate available)
-        if: env.HAS_SIGNING_CERT == 'true'
-        env:
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-        run: |
-          DMG_OUTPUT="tauri/src-tauri/target/universal-apple-darwin/release/bundle/dmg"
-          DMG_FILE=$(ls "$DMG_OUTPUT"/*.dmg | head -1)
-          
-          codesign --force --sign "$APPLE_SIGNING_IDENTITY" "$DMG_FILE"
-          codesign --verify --verbose "$DMG_FILE"
-
-      - name: Notarize app
-        if: env.HAS_SIGNING_CERT == 'true'
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          DMG_OUTPUT="tauri/src-tauri/target/universal-apple-darwin/release/bundle/dmg"
-          DMG_FILE=$(ls "$DMG_OUTPUT"/*.dmg | head -1)
-          
-          # Submit for notarization
-          echo "Submitting for notarization..."
-          xcrun notarytool submit "$DMG_FILE" \
-            --apple-id "$APPLE_ID" \
-            --password "$APPLE_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID" \
-            --wait
-          
-          # Staple the notarization ticket
-          echo "Stapling notarization ticket..."
-          xcrun stapler staple "$DMG_FILE"
-          
-          echo "Notarization complete!"
-
-      - name: Cleanup keychain
-        if: always()
-        run: |
-          if [ -n "$KEYCHAIN_PATH" ]; then
-            security delete-keychain "$KEYCHAIN_PATH" || true
-          fi
-
       - name: Upload artifacts (Universal)
         uses: actions/upload-artifact@v4
         with:
           name: echosmith-macos-universal
           path: tauri/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
-
-      - name: Upload artifacts (x86_64)
-        uses: actions/upload-artifact@v4
-        with:
-          name: echosmith-macos-x86_64
-          path: tauri/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
-
-      - name: Upload artifacts (aarch64)
-        uses: actions/upload-artifact@v4
-        with:
-          name: echosmith-macos-aarch64
-          path: tauri/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
 
   build-windows:
     runs-on: windows-latest
@@ -369,8 +251,6 @@ jobs:
         with:
           files: |
             echosmith-macos-universal/*
-            echosmith-macos-x86_64/*
-            echosmith-macos-aarch64/*
             echosmith-windows/**/*
           draft: true
           generate_release_notes: true
