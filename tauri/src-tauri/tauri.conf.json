@@ -22,11 +22,11 @@
     ],
     "macOS": {
       "minimumSystemVersion": "10.13",
-      "entitlements": "entitlements.plist",
+      "entitlements": null,
       "exceptionDomain": null,
       "frameworks": [],
       "providerShortName": null,
-      "signingIdentity": null
+      "signingIdentity": "-"
     },
     "windows": {
       "certificateThumbprint": null,
