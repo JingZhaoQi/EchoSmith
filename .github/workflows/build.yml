@@ -129,6 +129,9 @@ jobs:
       - name: Build Tauri app (x86_64)
         working-directory: tauri
         env:
+          # Clear certificate env vars to prevent Tauri from attempting to import invalid certificates
+          APPLE_CERTIFICATE: ""
+          APPLE_CERTIFICATE_PASSWORD: ""
           APPLE_SIGNING_IDENTITY: "-"
         run: |
           npm run build -- --target x86_64-apple-darwin --bundles app
@@ -136,6 +139,9 @@ jobs:
       - name: Build Tauri app (aarch64)
         working-directory: tauri
         env:
+          # Clear certificate env vars to prevent Tauri from attempting to import invalid certificates
+          APPLE_CERTIFICATE: ""
+          APPLE_CERTIFICATE_PASSWORD: ""
           APPLE_SIGNING_IDENTITY: "-"
         run: |
           npm run build -- --target aarch64-apple-darwin --bundles app
