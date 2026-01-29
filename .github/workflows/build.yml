@@ -9,14 +9,253 @@ on:
 permissions:
   contents: write
 
-jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        platform: [macos-latest, windows-latest]
+env:
+  # macOS signing configuration
+  APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+  APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+  APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+  APPLE_ID: ${{ secrets.APPLE_ID }}
+  APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+  APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
-    runs-on: ${{ matrix.platform }}
+jobs:
+  build-macos:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Rust with Universal Binary targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tauri/src-tauri
+
+      - name: Install dependencies (macOS)
+        run: |
+          brew install ffmpeg
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+          pip install pyinstaller
+
+      - name: Download ASR models
+        run: |
+          python scripts/download_models.py
+
+      - name: Build backend distribution (Universal Binary)
+        run: |
+          # Build backend - PyInstaller will create native binary
+          bash scripts/build_backend.sh
+          
+          # Note: For true Universal Binary support, you may need to:
+          # 1. Build on both x86_64 and arm64 runners
+          # 2. Use lipo to combine binaries
+          # For now, we build native binary for the runner architecture
+
+      - name: Debug backend output
+        run: |
+          echo "=== Backend build output ==="
+          ls -la tauri_backend_dist/ || echo "tauri_backend_dist not found"
+          ls -la tauri_backend_dist/backend/ || echo "tauri_backend_dist/backend not found"
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm install
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Copy logo to dist
+        run: cp echo_logo.svg frontend/dist/
+
+      - name: Install Tauri dependencies
+        working-directory: tauri
+        run: npm install
+
+      - name: Prepare backend for bundling
+        run: |
+          rm -rf tauri/src-tauri/backend
+          cp -r tauri_backend_dist/backend tauri/src-tauri/
+          echo "=== Backend bundle contents ==="
+          ls -la tauri/src-tauri/backend/
+          du -sh tauri/src-tauri/backend/
+
+      - name: Import Apple signing certificate
+        if: env.APPLE_CERTIFICATE != ''
+        run: |
+          # Create temporary keychain
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
+          
+          # Create keychain
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          
+          # Import certificate
+          echo "$APPLE_CERTIFICATE" | base64 --decode > $RUNNER_TEMP/certificate.p12
+          security import $RUNNER_TEMP/certificate.p12 \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+          
+          # Set keychain as default
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          
+          # Allow codesign to access keychain
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> $GITHUB_ENV
+
+      - name: Build Tauri app (x86_64)
+        working-directory: tauri
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          npm run build -- --target x86_64-apple-darwin
+
+      - name: Build Tauri app (aarch64)
+        working-directory: tauri
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          npm run build -- --target aarch64-apple-darwin
+
+      - name: Create Universal Binary DMG
+        run: |
+          # Create universal binary using lipo
+          mkdir -p tauri/src-tauri/target/universal-apple-darwin/release/bundle/dmg
+          
+          X86_APP="tauri/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/EchoSmith.app"
+          ARM_APP="tauri/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/EchoSmith.app"
+          UNIVERSAL_APP="tauri/src-tauri/target/universal-apple-darwin/release/bundle/macos/EchoSmith.app"
+          
+          # Copy ARM app as base (has correct structure)
+          cp -R "$ARM_APP" "$UNIVERSAL_APP"
+          
+          # Create universal binary for main executable
+          lipo -create \
+            "$X86_APP/Contents/MacOS/EchoSmith" \
+            "$ARM_APP/Contents/MacOS/EchoSmith" \
+            -output "$UNIVERSAL_APP/Contents/MacOS/EchoSmith"
+          
+          echo "Universal binary created:"
+          file "$UNIVERSAL_APP/Contents/MacOS/EchoSmith"
+
+      - name: Sign Universal Binary (if certificate available)
+        if: env.APPLE_SIGNING_IDENTITY != ''
+        run: |
+          UNIVERSAL_APP="tauri/src-tauri/target/universal-apple-darwin/release/bundle/macos/EchoSmith.app"
+          
+          # Sign the app
+          codesign --force --deep --sign "$APPLE_SIGNING_IDENTITY" \
+            --options runtime \
+            --entitlements tauri/src-tauri/entitlements.plist \
+            "$UNIVERSAL_APP"
+          
+          # Verify signature
+          codesign --verify --verbose "$UNIVERSAL_APP"
+          
+          echo "App signed successfully"
+
+      - name: Create DMG
+        run: |
+          UNIVERSAL_APP="tauri/src-tauri/target/universal-apple-darwin/release/bundle/macos/EchoSmith.app"
+          DMG_OUTPUT="tauri/src-tauri/target/universal-apple-darwin/release/bundle/dmg"
+          
+          # Create DMG using create-dmg or hdiutil
+          VERSION=$(grep '"version"' tauri/src-tauri/tauri.conf.json | head -1 | sed 's/.*: "\(.*\)".*/\1/')
+          DMG_NAME="EchoSmith_${VERSION}_universal.dmg"
+          
+          # Create temporary DMG folder
+          mkdir -p "$DMG_OUTPUT"
+          
+          # Simple DMG creation with hdiutil
+          hdiutil create -volname "EchoSmith" \
+            -srcfolder "$UNIVERSAL_APP" \
+            -ov -format UDZO \
+            "$DMG_OUTPUT/$DMG_NAME"
+          
+          echo "DMG created: $DMG_OUTPUT/$DMG_NAME"
+          ls -la "$DMG_OUTPUT/"
+
+      - name: Sign DMG (if certificate available)
+        if: env.APPLE_SIGNING_IDENTITY != ''
+        run: |
+          DMG_OUTPUT="tauri/src-tauri/target/universal-apple-darwin/release/bundle/dmg"
+          DMG_FILE=$(ls "$DMG_OUTPUT"/*.dmg | head -1)
+          
+          codesign --force --sign "$APPLE_SIGNING_IDENTITY" "$DMG_FILE"
+          codesign --verify --verbose "$DMG_FILE"
+
+      - name: Notarize app
+        if: env.APPLE_ID != '' && env.APPLE_PASSWORD != ''
+        run: |
+          DMG_OUTPUT="tauri/src-tauri/target/universal-apple-darwin/release/bundle/dmg"
+          DMG_FILE=$(ls "$DMG_OUTPUT"/*.dmg | head -1)
+          
+          # Submit for notarization
+          echo "Submitting for notarization..."
+          xcrun notarytool submit "$DMG_FILE" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+          
+          # Staple the notarization ticket
+          echo "Stapling notarization ticket..."
+          xcrun stapler staple "$DMG_FILE"
+          
+          echo "Notarization complete!"
+
+      - name: Cleanup keychain
+        if: always()
+        run: |
+          if [ -n "$KEYCHAIN_PATH" ]; then
+            security delete-keychain "$KEYCHAIN_PATH" || true
+          fi
+
+      - name: Upload artifacts (Universal)
+        uses: actions/upload-artifact@v4
+        with:
+          name: echosmith-macos-universal
+          path: tauri/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+
+      - name: Upload artifacts (x86_64)
+        uses: actions/upload-artifact@v4
+        with:
+          name: echosmith-macos-x86_64
+          path: tauri/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
+
+      - name: Upload artifacts (aarch64)
+        uses: actions/upload-artifact@v4
+        with:
+          name: echosmith-macos-aarch64
+          path: tauri/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+
+  build-windows:
+    runs-on: windows-latest
 
     steps:
       - name: Checkout repository
@@ -35,20 +274,14 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'x86_64-apple-darwin,aarch64-apple-darwin' || 'x86_64-pc-windows-msvc' }}
+          targets: x86_64-pc-windows-msvc
 
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: tauri/src-tauri
 
-      - name: Install dependencies (macOS)
-        if: matrix.platform == 'macos-latest'
-        run: |
-          brew install ffmpeg
-
       - name: Install dependencies (Windows)
-        if: matrix.platform == 'windows-latest'
         run: |
           choco install ffmpeg -y
 
@@ -62,13 +295,7 @@ jobs:
         run: |
           python scripts/download_models.py
 
-      - name: Build backend distribution (macOS)
-        if: matrix.platform == 'macos-latest'
-        run: |
-          bash scripts/build_backend.sh
-
       - name: Build backend distribution (Windows)
-        if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: |
           .\scripts\build_backend.ps1
@@ -96,18 +323,7 @@ jobs:
         working-directory: tauri
         run: npm install
 
-      - name: Prepare backend for bundling (macOS)
-        if: matrix.platform == 'macos-latest'
-        shell: bash
-        run: |
-          rm -rf tauri/src-tauri/backend
-          cp -r tauri_backend_dist/backend tauri/src-tauri/
-          echo "=== Backend bundle contents ==="
-          ls -la tauri/src-tauri/backend/
-          du -sh tauri/src-tauri/backend/
-
-      - name: Prepare backend for bundling (Windows)
-        if: matrix.platform == 'windows-latest'
+      - name: Prepare backend for bundling
         shell: bash
         run: |
           rm -rf tauri/src-tauri/backend
@@ -118,17 +334,12 @@ jobs:
 
       - name: Build Tauri app
         working-directory: tauri
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run build
 
-      - name: Upload artifacts (macOS)
-        if: matrix.platform == 'macos-latest'
-        uses: actions/upload-artifact@v4
-        with:
-          name: echosmith-macos
-          path: tauri/src-tauri/target/release/bundle/dmg/*.dmg
-
       - name: Upload artifacts (Windows)
-        if: matrix.platform == 'windows-latest'
         uses: actions/upload-artifact@v4
         with:
           name: echosmith-windows
@@ -137,7 +348,7 @@ jobs:
             tauri/src-tauri/target/release/bundle/nsis/*.exe
 
   release:
-    needs: build
+    needs: [build-macos, build-windows]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
 
@@ -145,11 +356,18 @@ jobs:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
 
+      - name: List downloaded artifacts
+        run: |
+          echo "=== Downloaded artifacts ==="
+          find . -type f -name "*.dmg" -o -name "*.msi" -o -name "*.exe" | head -50
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            echosmith-macos/*
+            echosmith-macos-universal/*
+            echosmith-macos-x86_64/*
+            echosmith-macos-aarch64/*
             echosmith-windows/**/*
           draft: true
           generate_release_notes: true
