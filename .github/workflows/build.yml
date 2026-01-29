@@ -9,14 +9,8 @@ on:
 permissions:
   contents: write
 
-env:
-  # macOS signing configuration
-  APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-  APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-  APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-  APPLE_ID: ${{ secrets.APPLE_ID }}
-  APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-  APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+# NOTE: Apple signing env vars are only set in specific steps that need them
+# to prevent Tauri from attempting certificate import when secrets are empty
 
 jobs:
   build-macos:
@@ -100,7 +94,10 @@ jobs:
           du -sh tauri/src-tauri/backend/
 
       - name: Import Apple signing certificate
-        if: env.APPLE_CERTIFICATE != ''
+        if: ${{ secrets.APPLE_CERTIFICATE != '' }}
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: |
           # Create temporary keychain
           KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
@@ -125,13 +122,12 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           
           echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> $GITHUB_ENV
+          echo "HAS_SIGNING_CERT=true" >> $GITHUB_ENV
 
       - name: Build Tauri app (x86_64)
         working-directory: tauri
         env:
-          # Clear certificate env vars to prevent Tauri from attempting to import invalid certificates
-          APPLE_CERTIFICATE: ""
-          APPLE_CERTIFICATE_PASSWORD: ""
+          # Disable code signing - signing happens after universal binary creation
           APPLE_SIGNING_IDENTITY: "-"
         run: |
           npm run build -- --target x86_64-apple-darwin --bundles app
@@ -139,9 +135,7 @@ jobs:
       - name: Build Tauri app (aarch64)
         working-directory: tauri
         env:
-          # Clear certificate env vars to prevent Tauri from attempting to import invalid certificates
-          APPLE_CERTIFICATE: ""
-          APPLE_CERTIFICATE_PASSWORD: ""
+          # Disable code signing - signing happens after universal binary creation
           APPLE_SIGNING_IDENTITY: "-"
         run: |
           npm run build -- --target aarch64-apple-darwin --bundles app
@@ -168,7 +162,9 @@ jobs:
           file "$UNIVERSAL_APP/Contents/MacOS/EchoSmith"
 
       - name: Sign Universal Binary (if certificate available)
-        if: env.APPLE_SIGNING_IDENTITY != ''
+        if: env.HAS_SIGNING_CERT == 'true'
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
           UNIVERSAL_APP="tauri/src-tauri/target/universal-apple-darwin/release/bundle/macos/EchoSmith.app"
           
@@ -205,7 +201,9 @@ jobs:
           ls -la "$DMG_OUTPUT/"
 
       - name: Sign DMG (if certificate available)
-        if: env.APPLE_SIGNING_IDENTITY != ''
+        if: env.HAS_SIGNING_CERT == 'true'
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
           DMG_OUTPUT="tauri/src-tauri/target/universal-apple-darwin/release/bundle/dmg"
           DMG_FILE=$(ls "$DMG_OUTPUT"/*.dmg | head -1)
@@ -214,7 +212,11 @@ jobs:
           codesign --verify --verbose "$DMG_FILE"
 
       - name: Notarize app
-        if: env.APPLE_ID != '' && env.APPLE_PASSWORD != ''
+        if: env.HAS_SIGNING_CERT == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           DMG_OUTPUT="tauri/src-tauri/target/universal-apple-darwin/release/bundle/dmg"
           DMG_FILE=$(ls "$DMG_OUTPUT"/*.dmg | head -1)
