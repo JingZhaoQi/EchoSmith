@@ -128,13 +128,17 @@ jobs:
 
       - name: Build Tauri app (x86_64)
         working-directory: tauri
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
         run: |
-          npm run build -- --target x86_64-apple-darwin
+          npm run build -- --target x86_64-apple-darwin --bundles app
 
       - name: Build Tauri app (aarch64)
         working-directory: tauri
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
         run: |
-          npm run build -- --target aarch64-apple-darwin
+          npm run build -- --target aarch64-apple-darwin --bundles app
 
       - name: Create Universal Binary DMG
         run: |
