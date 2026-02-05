@@ -17,6 +17,12 @@ interface BatchFile {
   error?: string;
 }
 
+// Allowed audio/video extensions
+const ALLOWED_EXTENSIONS = new Set([
+  "mp3", "wav", "m4a", "flac", "ogg", "aac", "wma", "aiff", "caf",
+  "mp4", "mov", "avi", "mkv", "webm", "m4v"
+]);
+
 export function BatchTaskComposer(): JSX.Element {
   const [batchFiles, setBatchFiles] = useState<BatchFile[]>([]);
   const [exportFormats, setExportFormats] = useState<Set<ExportFormat>>(
@@ -24,9 +30,49 @@ export function BatchTaskComposer(): JSX.Element {
   );
   const abortControllerRef = useRef<AbortController | null>(null);
   const [wasInterrupted, setWasInterrupted] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
 
   const upsertTask = useTasksStore((state) => state.upsertTask);
   const setActiveTask = useTasksStore((state) => state.setActiveTask);
+
+  // Drag and drop handlers
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+
+    const droppedFiles = Array.from(e.dataTransfer.files);
+    const validFiles: BatchFile[] = [];
+
+    for (const file of droppedFiles) {
+      const ext = file.name.split('.').pop()?.toLowerCase();
+      if (ext && ALLOWED_EXTENSIONS.has(ext)) {
+        validFiles.push({
+          file,
+          path: undefined, // Drag-drop doesn't provide full path in browser
+          status: "pending",
+        });
+      }
+    }
+
+    if (validFiles.length > 0) {
+      setBatchFiles((prev) => [...prev, ...validFiles]);
+    } else if (droppedFiles.length > 0) {
+      alert("不支持的文件格式，请选择音视频文件");
+    }
+  };
 
   // Listen for clear all files event
   useEffect(() => {
@@ -228,7 +274,15 @@ export function BatchTaskComposer(): JSX.Element {
         filters: [
           {
             name: "Audio/Video",
-            extensions: ["mp3", "wav", "m4a", "mp4", "mov", "avi", "mkv", "flac", "ogg", "aac", "wma", "webm"],
+            extensions: [
+              // Audio formats (include uppercase variants for macOS)
+              "mp3", "MP3", "wav", "WAV", "m4a", "M4A", 
+              "flac", "FLAC", "ogg", "OGG", "aac", "AAC", 
+              "wma", "WMA", "aiff", "AIFF", "caf", "CAF",
+              // Video formats
+              "mp4", "MP4", "mov", "MOV", "avi", "AVI", 
+              "mkv", "MKV", "webm", "WEBM", "m4v", "M4V"
+            ],
           },
         ],
       });
@@ -375,8 +429,15 @@ export function BatchTaskComposer(): JSX.Element {
       {/* File upload area */}
       <div className="space-y-3 flex-1">
         <div
-          className="flex flex-col items-center justify-center rounded-[16px] border-2 border-dashed border-black/10 dark:border-white/10 bg-black/[0.02] dark:bg-white/[0.02] hover:bg-black/[0.04] dark:hover:bg-white/[0.04] hover:border-black/20 dark:hover:border-white/20 transition-all duration-200 px-5 py-8 text-center cursor-pointer group"
+          className={`flex flex-col items-center justify-center rounded-[16px] border-2 border-dashed transition-all duration-200 px-5 py-8 text-center cursor-pointer group ${
+            isDragging
+              ? "border-indigo-500 bg-indigo-500/10 dark:bg-indigo-400/10"
+              : "border-black/10 dark:border-white/10 bg-black/[0.02] dark:bg-white/[0.02] hover:bg-black/[0.04] dark:hover:bg-white/[0.04] hover:border-black/20 dark:hover:border-white/20"
+          }`}
           onClick={handleFileSelect}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
           role="button"
           tabIndex={0}
           onKeyDown={(event) => {
@@ -385,14 +446,18 @@ export function BatchTaskComposer(): JSX.Element {
             }
           }}
         >
-          <div className="mb-4 p-3 rounded-full bg-indigo-500/10 dark:bg-indigo-400/10 group-hover:bg-indigo-500/15 dark:group-hover:bg-indigo-400/15 transition-colors">
+          <div className={`mb-4 p-3 rounded-full transition-colors ${
+            isDragging
+              ? "bg-indigo-500/20 dark:bg-indigo-400/20"
+              : "bg-indigo-500/10 dark:bg-indigo-400/10 group-hover:bg-indigo-500/15 dark:group-hover:bg-indigo-400/15"
+          }`}>
             <UploadIcon
               className="h-7 w-7 text-indigo-600 dark:text-indigo-400"
               strokeWidth={2.5}
             />
           </div>
           <p className="text-sm font-semibold text-gray-900 dark:text-white mb-1">
-            点击选择多个文件
+            {isDragging ? "松开以添加文件" : "点击或拖拽文件"}
           </p>
           <p className="text-xs text-gray-500 dark:text-gray-400">
             支持 MP3 / WAV / M4A / MP4 / MOV 等常见格式
