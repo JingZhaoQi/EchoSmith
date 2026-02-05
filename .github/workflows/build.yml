@@ -133,7 +133,7 @@ jobs:
           
           mkdir -p "$DMG_OUTPUT"
           
-# Use create-dmg for proper DMG with Applications link
+          # Use create-dmg for proper DMG with Applications link
           create-dmg \
             --volname "EchoSmith" \
             --window-pos 200 120 \
