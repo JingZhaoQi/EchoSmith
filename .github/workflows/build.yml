@@ -119,6 +119,10 @@ jobs:
           echo "Universal binary created:"
           file "$UNIVERSAL_APP/Contents/MacOS/EchoSmith"
 
+      - name: Install create-dmg
+        run: |
+          brew install create-dmg
+
       - name: Create DMG
         run: |
           UNIVERSAL_APP="tauri/src-tauri/target/universal-apple-darwin/release/bundle/macos/EchoSmith.app"
@@ -129,10 +133,17 @@ jobs:
           
           mkdir -p "$DMG_OUTPUT"
           
-          hdiutil create -volname "EchoSmith" \
-            -srcfolder "$UNIVERSAL_APP" \
-            -ov -format UDZO \
-            "$DMG_OUTPUT/$DMG_NAME"
+# Use create-dmg for proper DMG with Applications link
+          create-dmg \
+            --volname "EchoSmith" \
+            --window-pos 200 120 \
+            --window-size 660 400 \
+            --icon-size 100 \
+            --icon "EchoSmith.app" 180 170 \
+            --app-drop-link 480 170 \
+            --no-internet-enable \
+            "$DMG_OUTPUT/$DMG_NAME" \
+            "$UNIVERSAL_APP"
           
           echo "DMG created: $DMG_OUTPUT/$DMG_NAME"
           ls -la "$DMG_OUTPUT/"
