@@ -73,11 +73,20 @@ fn main() {
                     log_to_file(&format!("FATAL: backend failed to start: {}", msg));
 
                     let log_path = get_log_path();
+                    #[cfg(target_os = "macos")]
                     let hint = format!(
                         "后端启动失败，请尝试以下步骤：\n\n\
                          1. 打开「终端」应用\n\
                          2. 运行命令：xattr -cr /Applications/EchoSmith.app\n\
                          3. 重新打开 EchoSmith\n\n\
+                         日志文件：{}\n\n\
+                         错误信息：{}",
+                        log_path.display(),
+                        msg,
+                    );
+                    #[cfg(not(target_os = "macos"))]
+                    let hint = format!(
+                        "后端启动失败。\n\n\
                          日志文件：{}\n\n\
                          错误信息：{}",
                         log_path.display(),
@@ -131,8 +140,8 @@ fn spawn_backend(app_handle: tauri::AppHandle) -> Result<BackendState, Box<dyn s
     // Strip macOS quarantine attributes from the entire backend tree.
     // When the app is installed from a DMG, Gatekeeper quarantines all files.
     // The user may approve the main app, but subsidiary binaries can still be blocked.
+    #[cfg(target_os = "macos")]
     if !backend_path.is_dir() {
-        // Go up to the "backend" directory (contains binary + _internal/)
         if let Some(backend_dir) = backend_path.parent() {
             log_to_file(&format!("Stripping quarantine from {:?}", backend_dir));
             let output = Command::new("xattr")
@@ -154,7 +163,8 @@ fn spawn_backend(app_handle: tauri::AppHandle) -> Result<BackendState, Box<dyn s
         }
     }
 
-    // Check executable permissions
+    // Check executable permissions (Unix only)
+    #[cfg(unix)]
     if !backend_path.is_dir() {
         use std::os::unix::fs::PermissionsExt;
         if let Ok(metadata) = fs::metadata(&backend_path) {
