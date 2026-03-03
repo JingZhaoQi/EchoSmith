@@ -1,9 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::{
+    fs::{self, OpenOptions},
+    io::Write,
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
-    process::{Child, Command},
+    process::{Child, Command, Stdio},
     sync::Mutex,
     thread,
     time::Duration,
@@ -33,14 +35,70 @@ fn get_backend_config(state: State<BackendState>) -> BackendConfig {
     }
 }
 
+fn get_log_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let log_dir = PathBuf::from(&home).join("Library").join("Logs").join("EchoSmith");
+    let _ = fs::create_dir_all(&log_dir);
+    log_dir.join("backend.log")
+}
+
+fn log_to_file(msg: &str) {
+    let path = get_log_path();
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let _ = writeln!(file, "[{}] {}", timestamp, msg);
+    }
+}
+
 fn main() {
+    // Truncate log on fresh start
+    let log_path = get_log_path();
+    let _ = fs::write(&log_path, "");
+    log_to_file("=== EchoSmith starting ===");
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .setup(|app| {
-            let backend_state = spawn_backend(app.handle().clone())?;
-            app.manage(backend_state);
+            match spawn_backend(app.handle().clone()) {
+                Ok(backend_state) => {
+                    app.manage(backend_state);
+                }
+                Err(err) => {
+                    let msg = format!("{}", err);
+                    log_to_file(&format!("FATAL: backend failed to start: {}", msg));
+
+                    let log_path = get_log_path();
+                    let hint = format!(
+                        "后端启动失败，请尝试以下步骤：\n\n\
+                         1. 打开「终端」应用\n\
+                         2. 运行命令：xattr -cr /Applications/EchoSmith.app\n\
+                         3. 重新打开 EchoSmith\n\n\
+                         日志文件：{}\n\n\
+                         错误信息：{}",
+                        log_path.display(),
+                        msg,
+                    );
+                    eprintln!("{}", hint);
+
+                    // Show native dialog so user can see the error
+                    #[cfg(target_os = "macos")]
+                    {
+                        use std::process::Command as Cmd;
+                        let script = format!(
+                            "display dialog \"{}\" with title \"EchoSmith\" buttons {{\"OK\"}} default button 1",
+                            hint.replace('\"', "\\\"").replace('\n', "\\n")
+                        );
+                        let _ = Cmd::new("osascript").args(["-e", &script]).output();
+                    }
+
+                    return Err(err);
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![get_backend_config])
@@ -66,45 +124,101 @@ fn spawn_backend(app_handle: tauri::AppHandle) -> Result<BackendState, Box<dyn s
         .collect();
 
     let backend_path = get_backend_path(&app_handle)?;
-    eprintln!("[DEBUG] Backend path: {:?}", backend_path);
-    eprintln!("[DEBUG] Is directory: {}", backend_path.is_dir());
+    log_to_file(&format!("Backend path: {:?}", backend_path));
+    log_to_file(&format!("Is directory: {}", backend_path.is_dir()));
+    log_to_file(&format!("File exists: {}", backend_path.exists()));
+
+    // Strip macOS quarantine attributes from the entire backend tree.
+    // When the app is installed from a DMG, Gatekeeper quarantines all files.
+    // The user may approve the main app, but subsidiary binaries can still be blocked.
+    if !backend_path.is_dir() {
+        // Go up to the "backend" directory (contains binary + _internal/)
+        if let Some(backend_dir) = backend_path.parent() {
+            log_to_file(&format!("Stripping quarantine from {:?}", backend_dir));
+            let output = Command::new("xattr")
+                .args(["-rc", &backend_dir.to_string_lossy()])
+                .output();
+            match output {
+                Ok(o) => {
+                    if !o.status.success() {
+                        log_to_file(&format!(
+                            "xattr warning: {}",
+                            String::from_utf8_lossy(&o.stderr)
+                        ));
+                    } else {
+                        log_to_file("Quarantine attributes stripped successfully");
+                    }
+                }
+                Err(e) => log_to_file(&format!("xattr failed: {}", e)),
+            }
+        }
+    }
+
+    // Check executable permissions
+    if !backend_path.is_dir() {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = fs::metadata(&backend_path) {
+            let mode = metadata.permissions().mode();
+            log_to_file(&format!("Backend permissions: {:o}", mode));
+            if mode & 0o111 == 0 {
+                log_to_file("WARNING: Backend binary is not executable!");
+            }
+        }
+    }
 
     let mut last_error: Option<String> = None;
 
+    // Open log file for backend stdout/stderr
+    let log_path = get_log_path();
+    let backend_stdout = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .ok();
+    let backend_stderr = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .ok();
+
     for attempt in 0..5 {
         let port = select_port(attempt);
-        eprintln!("[DEBUG] Attempt #{}, using port {}", attempt + 1, port);
+        log_to_file(&format!("Attempt #{}, port {}", attempt + 1, port));
 
         let mut command = if backend_path.is_dir() {
-            // Development: python module (backend_path is the backend directory)
             let project_root = backend_path
                 .parent()
                 .ok_or("Invalid backend path structure in development mode")?;
             let python_bin = find_venv_python(project_root).unwrap_or_else(|| "python3".into());
             let mut cmd = Command::new(python_bin);
             cmd.args(["-m", "backend"]);
-            eprintln!("[DEBUG] Running: python3 -m backend");
-            eprintln!("[DEBUG] Working directory: {:?}", project_root);
             cmd.current_dir(project_root);
             cmd
         } else {
-            // Production: standalone executable
-            eprintln!("[DEBUG] Running standalone executable: {:?}", backend_path);
             Command::new(&backend_path)
         };
 
         command.env("ECHOSMITH_PORT", port.to_string());
         command.env("ECHOSMITH_TOKEN", &token);
-        eprintln!("[DEBUG] Port: {}, Token: {}", port, &token);
+
+        // Redirect stdout/stderr to log file
+        if let Some(ref stdout_file) = backend_stdout {
+            command.stdout(Stdio::from(stdout_file.try_clone().unwrap_or_else(|_| {
+                OpenOptions::new().write(true).open("/dev/null").unwrap()
+            })));
+        }
+        if let Some(ref stderr_file) = backend_stderr {
+            command.stderr(Stdio::from(stderr_file.try_clone().unwrap_or_else(|_| {
+                OpenOptions::new().write(true).open("/dev/null").unwrap()
+            })));
+        }
 
         match command.spawn() {
             Ok(mut child) => {
-                eprintln!(
-                    "[DEBUG] Backend process spawned successfully, PID: {:?}",
-                    child.id()
-                );
+                log_to_file(&format!("Backend spawned, PID: {:?}", child.id()));
                 match wait_for_backend(&mut child, port) {
                     Ok(()) => {
+                        log_to_file(&format!("Backend ready on port {}", port));
                         return Ok(BackendState {
                             process: Mutex::new(Some(child)),
                             port,
@@ -112,10 +226,7 @@ fn spawn_backend(app_handle: tauri::AppHandle) -> Result<BackendState, Box<dyn s
                         });
                     }
                     Err(wait_err) => {
-                        eprintln!(
-                            "[ERROR] Backend did not become ready on port {}: {}",
-                            port, wait_err
-                        );
+                        log_to_file(&format!("Backend not ready on port {}: {}", port, wait_err));
                         let _ = child.kill();
                         last_error = Some(wait_err);
                     }
@@ -126,7 +237,7 @@ fn spawn_backend(app_handle: tauri::AppHandle) -> Result<BackendState, Box<dyn s
                     "Failed to start backend at {:?}: {}",
                     backend_path, spawn_err
                 );
-                eprintln!("[ERROR] {}", err_msg);
+                log_to_file(&format!("SPAWN ERROR: {}", err_msg));
                 last_error = Some(err_msg);
             }
         }
@@ -250,17 +361,18 @@ fn get_backend_path(app_handle: &tauri::AppHandle) -> Result<PathBuf, Box<dyn st
     ];
 
     for path in &possible_paths {
-        if path.exists() {
-            eprintln!("[DEBUG] Using backend in production mode: {:?}", path);
+        let exists = path.exists();
+        log_to_file(&format!("Try path: {:?} exists={}", path, exists));
+        if exists {
             return Ok(path.clone());
         }
     }
 
     let error_msg = format!(
-        "Backend executable not found in production mode.\nTried paths: {:?}\nResource dir: {:?}",
+        "Backend executable not found.\nTried: {:?}\nResource dir: {:?}",
         possible_paths, resource_path
     );
-    eprintln!("[ERROR] {}", error_msg);
+    log_to_file(&error_msg);
     Err(error_msg.into())
 }
 

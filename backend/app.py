@@ -27,9 +27,11 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 try:
     from asr_engine import ASREngine
     from task_store import TaskRecord, TaskStatus, task_store
+    from url_downloader import download_audio, extract_video_title
 except ImportError:
     from .asr_engine import ASREngine
     from .task_store import TaskRecord, TaskStatus, task_store
+    from .url_downloader import download_audio, extract_video_title
 
 
 class TaskControl:
@@ -81,6 +83,12 @@ async def healthcheck() -> JSONResponse:
         if bundled_ffmpeg_dir.exists():
             debug_info["ffmpeg_bin_contents"] = [f.name for f in bundled_ffmpeg_dir.iterdir()]
 
+    try:
+        import yt_dlp as _yt_dlp  # noqa: F401
+        ytdlp_ok = True
+    except ImportError:
+        ytdlp_ok = False
+
     return JSONResponse(
         {
             "ffmpeg": ffmpeg_ok,
@@ -90,6 +98,7 @@ async def healthcheck() -> JSONResponse:
             "download_progress": download_progress,
             "download_message": download_message,
             "model_cache_dir": model_cache_dir,
+            "ytdlp": ytdlp_ok,
             "status": "ok" if ffmpeg_ok else "degraded",
             "debug": debug_info,
         }
@@ -160,6 +169,83 @@ async def create_task(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@app.post("/api/tasks/local", status_code=201)
+async def create_task_from_local(
+    request: Request,
+    _: None = Depends(verify_token),
+) -> JSONResponse:
+    """Accept a local file path and transcribe directly from disk."""
+    body = await request.json()
+    path = body.get("path", "").strip()
+    language = body.get("language", "zh")
+
+    if not path:
+        raise HTTPException(status_code=400, detail="路径不能为空")
+
+    file_path = Path(path)
+    if not file_path.exists():
+        raise HTTPException(status_code=400, detail=f"文件不存在: {path}")
+
+    task_id = uuid.uuid4().hex
+    source_info = {
+        "type": "local",
+        "name": file_path.name,
+        "path": str(file_path),
+        "language": language,
+    }
+
+    record = TaskRecord(id=task_id, status=TaskStatus.QUEUED, source=source_info)
+    await task_store.create_task(record)
+
+    TASK_CONTROLS[task_id] = TaskControl()
+    # Empty cleanup_paths — we don't own the user's original file
+    asyncio.create_task(_run_task(task_id, source_info, []))
+    return JSONResponse({"id": task_id})
+
+
+@app.post("/api/tasks/url", status_code=201)
+async def create_task_from_url(
+    request: Request,
+    _: None = Depends(verify_token),
+) -> JSONResponse:
+    body = await request.json()
+    url = body.get("url", "").strip()
+    language = body.get("language", "zh")
+
+    if not url:
+        raise HTTPException(status_code=400, detail="URL 不能为空")
+
+    task_id = uuid.uuid4().hex
+    cleanup_paths: list[str] = []
+
+    try:
+        # Fetch title without downloading (fast)
+        try:
+            title = extract_video_title(url)
+        except Exception:
+            title = url
+
+        source_info = {
+            "type": "url",
+            "url": url,
+            "name": title or url,
+            "language": language,
+        }
+
+        record = TaskRecord(id=task_id, status=TaskStatus.QUEUED, source=source_info)
+        await task_store.create_task(record)
+
+        TASK_CONTROLS[task_id] = TaskControl()
+        asyncio.create_task(_run_task(task_id, source_info, cleanup_paths))
+        return JSONResponse({"id": task_id})
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        for path in cleanup_paths:
+            Path(path).unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 @app.delete("/api/tasks/{task_id}")
 async def delete_task(task_id: str, _: None = Depends(verify_token)) -> JSONResponse:
     try:
@@ -174,9 +260,9 @@ async def delete_task(task_id: str, _: None = Depends(verify_token)) -> JSONResp
         control.pause_event.set()
         TASK_CONTROLS.pop(task_id, None)
 
-    # Delete the uploaded file if it exists
+    # Delete the uploaded file if it exists (but not user's original local files)
     source_path = record.source.get("path")
-    if source_path and Path(source_path).exists():
+    if source_path and record.source.get("type") != "local" and Path(source_path).exists():
         try:
             Path(source_path).unlink()
         except Exception:
@@ -296,12 +382,58 @@ async def _run_task(task_id: str, source_info: dict, cleanup_paths: list[str]) -
         if engine._download_callback is None:
             engine._download_callback = model_download_cb
 
-        audio_path = Path(source_info["path"])
-        await task_store.update_task(task_id, message="转写中", progress=0.05)
+        if source_info.get("type") == "url":
+            # --- URL download branch ---
+            await task_store.update_task(task_id, message="下载中…", progress=0.01)
+
+            def _dl_progress(ratio: float, msg: str) -> None:
+                # Map download progress to 0 ~ 0.3
+                mapped = ratio * 0.3
+                asyncio.run_coroutine_threadsafe(
+                    task_store.update_task(
+                        task_id,
+                        status=TaskStatus.RUNNING,
+                        progress=mapped,
+                        message=msg,
+                        log={
+                            "timestamp": time.time(),
+                            "type": "progress",
+                            "message": msg,
+                            "progress": mapped,
+                        },
+                    ),
+                    loop,
+                )
+
+            downloaded_path = await loop.run_in_executor(
+                None,
+                lambda: download_audio(
+                    source_info["url"],
+                    task_id,
+                    progress_cb=_dl_progress,
+                    cancelled_checker=(lambda: control.cancelled) if control else None,
+                ),
+            )
+            cleanup_paths.append(downloaded_path)
+            audio_path = Path(downloaded_path)
+        else:
+            audio_path = Path(source_info["path"])
+
+        await task_store.update_task(task_id, message="转写中", progress=0.05 if source_info.get("type") != "url" else 0.30)
+
+        # For URL tasks, map transcription progress from 0.3 to 1.0
+        if source_info.get("type") == "url":
+            def url_progress_cb(progress: float, stage: str, partial: str) -> None:
+                mapped_progress = 0.3 + progress * 0.7
+                progress_cb(mapped_progress, stage, partial)
+
+            actual_progress_cb = url_progress_cb
+        else:
+            actual_progress_cb = progress_cb
 
         result = await engine.transcribe(
             audio_path,
-            progress_cb=progress_cb,
+            progress_cb=actual_progress_cb,
             pause_event=control.pause_event if control else None,
             cancelled_checker=(lambda: control.cancelled) if control else None,
         )
@@ -334,6 +466,9 @@ async def _run_task(task_id: str, source_info: dict, cleanup_paths: list[str]) -
                 # Task was deleted, exit gracefully
                 return
     except Exception as exc:  # noqa: BLE001
+        import traceback
+        print(f"[TASK ERROR] {task_id}: {exc}", flush=True)
+        traceback.print_exc()
         updated = await task_store.update_task(
             task_id,
             status=TaskStatus.FAILED,

@@ -10,6 +10,7 @@ export interface HealthStatus {
   model_downloading?: boolean;
   download_progress?: number;
   download_message?: string;
+  ytdlp?: boolean;
 }
 
 export type TaskStatus = "queued" | "running" | "paused" | "completed" | "failed" | "cancelled";
@@ -169,6 +170,7 @@ export async function fetchHealth(): Promise<HealthStatus> {
     model_downloading: data.model_downloading ?? false,
     download_progress: data.download_progress ?? (data.model_downloading ? 0 : 1),
     download_message: data.download_message,
+    ytdlp: data.ytdlp ?? false,
   };
 }
 
@@ -194,6 +196,18 @@ export async function createTaskFromFile(file: File, language = "zh"): Promise<s
   const response = await apiClient.post<{ id: string }>("/tasks", form, {
     headers: { "Content-Type": "multipart/form-data" }
   });
+  return response.data.id;
+}
+
+export async function createTaskFromPath(path: string, language = "zh"): Promise<string> {
+  await ensureBackendBase();
+  const response = await apiClient.post<{ id: string }>("/tasks/local", { path, language });
+  return response.data.id;
+}
+
+export async function createTaskFromUrl(url: string, language = "zh"): Promise<string> {
+  await ensureBackendBase();
+  const response = await apiClient.post<{ id: string }>("/tasks/url", { url, language });
   return response.data.id;
 }
 

@@ -1,9 +1,10 @@
 // Enhanced version of App.tsx with modern UI improvements
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 
 import { useTheme } from "../hooks/useTheme";
 import { BatchTaskComposer } from "../components/BatchTaskComposer";
+import { UrlTaskComposer } from "../components/UrlTaskComposer";
 import { TaskStreamPanel } from "../components/TaskStreamPanel";
 import { ResultPanel } from "../components/ResultPanel";
 import { ThemeToggle } from "../components/ThemeToggle";
@@ -17,8 +18,11 @@ const queryClient = new QueryClient();
 
 const logoUrl = new URL('../../echo_logo.svg', import.meta.url).href;
 
+type LeftTab = "batch" | "url";
+
 function AppShell(): JSX.Element {
   const [theme, setTheme] = useTheme();
+  const [leftTab, setLeftTab] = useState<LeftTab>("batch");
   const activeTaskId = useTasksStore((state) => state.activeTaskId);
   const setTasks = useTasksStore((state) => state.setTasks);
   const setActiveTask = useTasksStore((state) => state.setActiveTask);
@@ -139,8 +143,35 @@ function AppShell(): JSX.Element {
 
         {/* Enhanced Main Content */}
         <main className="flex-1 grid lg:grid-cols-[440px_1fr] gap-8 p-8">
-          <section className="space-y-6 animate-slide-in-left">
-            <BatchTaskComposer />
+          <section className="space-y-4 animate-slide-in-left">
+            {/* Tab switcher with pill indicator */}
+            <div className="relative flex rounded-xl bg-black/[0.04] dark:bg-white/[0.06] p-1">
+              {/* Sliding pill background */}
+              <div
+                className="absolute top-1 bottom-1 rounded-lg bg-white dark:bg-zinc-800 shadow-sm transition-transform duration-200 ease-out"
+                style={{
+                  width: "calc(50% - 4px)",
+                  transform: leftTab === "batch" ? "translateX(0)" : "translateX(calc(100% + 8px))",
+                }}
+              />
+              {([
+                { key: "batch" as LeftTab, label: "批量转写" },
+                { key: "url" as LeftTab, label: "在线视频" },
+              ]).map(({ key, label }) => (
+                <button
+                  key={key}
+                  onClick={() => setLeftTab(key)}
+                  className={`relative z-10 flex-1 px-4 py-1.5 rounded-lg text-sm font-medium transition-colors duration-200 ${
+                    leftTab === key
+                      ? "text-gray-900 dark:text-white"
+                      : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            {leftTab === "batch" ? <BatchTaskComposer /> : <UrlTaskComposer />}
           </section>
           <section className="space-y-6 animate-slide-in-right">
             <TaskStreamPanel />

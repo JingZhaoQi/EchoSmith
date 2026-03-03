@@ -57,7 +57,17 @@ if ($SherpaModelSrc) {
     # Only copy essential files (INT8 model + tokens)
     Copy-Item (Join-Path $SherpaModelSrc "model.int8.onnx") $ModelsCache
     Copy-Item (Join-Path $SherpaModelSrc "tokens.txt") $ModelsCache
-    Write-Host "Copied INT8 model to: $ModelsCache"
+
+    # Copy Silero VAD model if available
+    $SileroVad = Join-Path $env:USERPROFILE ".cache\sherpa-onnx\silero_vad.onnx"
+    if (Test-Path $SileroVad) {
+        Copy-Item $SileroVad $ModelsCache
+        Write-Host "Copied Silero VAD model"
+    } else {
+        Write-Host "WARNING: silero_vad.onnx not found at $SileroVad"
+    }
+
+    Write-Host "Copied models to: $ModelsCache"
     Get-ChildItem $ModelsCache
 } else {
     Write-Host "WARNING: No sherpa-onnx models found at $SherpaModelSrc"
@@ -129,6 +139,8 @@ $PyInstallerArgs = @(
     "--hidden-import", "app",
     "--hidden-import", "asr_engine",
     "--hidden-import", "task_store",
+    "--hidden-import", "url_downloader",
+    "--hidden-import", "certifi",
     "--collect-all", "sherpa_onnx"
 ) + $AddDataArgs + @("__main__.py")
 

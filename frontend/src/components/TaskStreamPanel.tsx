@@ -1,6 +1,6 @@
 // Realtime task progress stream.
 import { useMutation } from "@tanstack/react-query";
-import { PauseIcon, PlayIcon, Trash2Icon, StopCircleIcon, XCircleIcon } from "lucide-react";
+import { PauseIcon, PlayIcon, Trash2Icon, StopCircleIcon, SkipForwardIcon, ChevronDownIcon } from "lucide-react";
 
 import { Progress } from "./ui/progress";
 import { Card } from "./ui/card";
@@ -135,76 +135,92 @@ export function TaskStreamPanel(): JSX.Element {
         <div className="flex items-center justify-between">
           <div>
             <h2 className="text-sm font-semibold">任务状态</h2>
-            <p className="text-xs text-muted-foreground">
+            <p className={`text-xs ${
+              currentStatus === "completed" ? "text-emerald-600 dark:text-emerald-400 font-medium" :
+              currentStatus === "failed" ? "text-red-600 dark:text-red-400 font-medium" :
+              "text-muted-foreground"
+            }`}>
               {activeTask ? `当前：${STATUS_LABELS[currentStatus ?? ""] ?? currentStatus ?? "未知"}` : "暂无任务"}
             </p>
           </div>
-          <select
-            className="text-xs rounded-lg border border-border bg-background px-2 py-1"
-            value={activeTaskId ?? ""}
-            onChange={(event) => setActiveTask(event.target.value || null)}
-          >
-            <option value="">选择任务</option>
-            {Object.values(tasks)
-              .sort((a, b) => b.created_at - a.created_at)
-              .map((task) => (
-                <option key={task.id} value={task.id}>
-                  {getSourceLabel(task.source) || task.id.slice(0, 8)} · {STATUS_LABELS[task.status] ?? task.status}
-                </option>
-              ))}
-          </select>
+          <div className="relative">
+            <select
+              className="appearance-none text-xs rounded-lg border border-border bg-muted/50 pl-2.5 pr-7 py-1.5 max-w-[200px] truncate cursor-pointer hover:bg-muted transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
+              value={activeTaskId ?? ""}
+              onChange={(event) => setActiveTask(event.target.value || null)}
+            >
+              <option value="">选择任务</option>
+              {Object.values(tasks)
+                .sort((a, b) => b.created_at - a.created_at)
+                .map((task) => (
+                  <option key={task.id} value={task.id}>
+                    {getSourceLabel(task.source) || task.id.slice(0, 8)} · {STATUS_LABELS[task.status] ?? task.status}
+                  </option>
+                ))}
+            </select>
+            <ChevronDownIcon className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+          </div>
         </div>
         <div className="flex items-center gap-3">
           <div className="flex-1">
-            <Progress value={progressPercent} />
+            <Progress
+              value={progressPercent}
+              variant={currentStatus === "completed" ? "success" : currentStatus === "failed" ? "error" : "default"}
+              animated={!isTerminal && !isPaused && progressPercent > 0}
+            />
           </div>
-          <span className="w-12 text-xs text-muted-foreground text-right">{progressPercent}%</span>
+          <span className={`w-12 text-xs text-right ${
+            currentStatus === "completed" ? "text-emerald-600 dark:text-emerald-400 font-medium" :
+            currentStatus === "failed" ? "text-red-600 dark:text-red-400 font-medium" :
+            "text-muted-foreground"
+          }`}>{progressPercent}%</span>
         </div>
-        <div className="flex gap-2 flex-wrap">
+        <div className="flex items-center gap-1">
           <Button
-            variant="secondary"
-            size="sm"
-            className="gap-1"
+            variant="ghost"
+            size="icon"
+            data-tip="暂停"
             disabled={!activeTaskId || isPaused || isTerminal || pauseMutation.isPending}
             onClick={() => pauseMutation.mutate()}
           >
-            <PauseIcon className="h-4 w-4" /> 暂停
+            <PauseIcon className="h-4 w-4" />
           </Button>
           <Button
-            variant="secondary"
-            size="sm"
-            className="gap-1"
+            variant="ghost"
+            size="icon"
+            data-tip="继续"
             disabled={!activeTaskId || !isPaused || isTerminal || resumeMutation.isPending}
             onClick={() => resumeMutation.mutate()}
           >
-            <PlayIcon className="h-4 w-4" /> 继续
+            <PlayIcon className="h-4 w-4" />
           </Button>
           <Button
-            variant="secondary"
-            size="sm"
-            className="gap-1"
+            variant="ghost"
+            size="icon"
+            data-tip="跳过"
             disabled={!activeTaskId || cancelMutation.isPending}
             onClick={() => cancelMutation.mutate()}
           >
-            <XCircleIcon className="h-4 w-4" /> 停止并跳过当前任务
+            <SkipForwardIcon className="h-4 w-4" />
           </Button>
+          <div className="mx-1 h-4 border-r border-border" />
           <Button
-            variant="secondary"
-            size="sm"
-            className="gap-1"
+            variant="ghost"
+            size="icon"
+            data-tip="全部停止"
             disabled={Object.keys(tasks).length === 0 || stopAllMutation.isPending}
             onClick={() => stopAllMutation.mutate()}
           >
-            <StopCircleIcon className="h-4 w-4" /> 停止所有任务
+            <StopCircleIcon className="h-4 w-4" />
           </Button>
           <Button
-            variant="secondary"
-            size="sm"
-            className="gap-1"
+            variant="ghost"
+            size="icon"
+            data-tip="清空"
             disabled={clearAllMutation.isPending}
             onClick={() => clearAllMutation.mutate()}
           >
-            <Trash2Icon className="h-4 w-4" /> 清空所有任务
+            <Trash2Icon className="h-4 w-4" />
           </Button>
         </div>
       </Card>

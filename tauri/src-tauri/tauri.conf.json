@@ -5,7 +5,7 @@
   "identifier": "com.jingzhaoqi.echosmith",
   "build": {
     "beforeBuildCommand": "",
-    "beforeDevCommand": "pnpm -C ../../frontend dev",
+    "beforeDevCommand": "lsof -ti:5173 >/dev/null 2>&1 || pnpm -C ../frontend dev",
     "devUrl": "http://localhost:5173",
     "frontendDist": "../../frontend/dist"
   },
@@ -40,6 +40,13 @@
       "tsp": false,
       "webviewInstallMode": {
         "type": "downloadBootstrapper"
+      },
+      "nsis": {
+        "headerImage": "icons/nsis-header.bmp",
+        "sidebarImage": "icons/nsis-sidebar.bmp",
+        "installerIcon": "icons/icon.ico",
+        "installMode": "both",
+        "displayLanguageSelector": true
       }
     }
   },

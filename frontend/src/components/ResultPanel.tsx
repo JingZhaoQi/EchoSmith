@@ -1,5 +1,6 @@
 // Transcription result viewer.
 import { useEffect, useRef, useState } from "react";
+import { CopyIcon, DownloadIcon, FileTextIcon } from "lucide-react";
 
 import { Button } from "./ui/button";
 import { Card } from "./ui/card";
@@ -9,9 +10,9 @@ import { STATUS_LABELS } from "../lib/constants";
 import { useTasksStore } from "../hooks/useTasksStore";
 
 const FORMAT_LABELS: Array<{ format: "txt" | "srt" | "json"; label: string }> = [
-  { format: "txt", label: "导出 TXT" },
-  { format: "srt", label: "导出 SRT" },
-  { format: "json", label: "导出 JSON" }
+  { format: "txt", label: "TXT" },
+  { format: "srt", label: "SRT" },
+  { format: "json", label: "JSON" }
 ];
 
 const EXPORTABLE_STATUSES: TaskStatus[] = ["paused", "completed", "failed", "cancelled"];
@@ -294,32 +295,40 @@ export function ResultPanel(): JSX.Element {
         ref={resultRef}
         className="h-60 rounded-lg border border-border bg-muted/40 p-4 text-sm overflow-y-auto whitespace-pre-wrap"
       >
-        {task?.result_text ? task.result_text : "正在等待任务..."}
+        {task?.result_text ? task.result_text : (
+          <div className="h-full flex flex-col items-center justify-center gap-2 text-muted-foreground">
+            <FileTextIcon className="h-10 w-10 opacity-30" />
+            <span className="text-xs">正在等待任务…</span>
+          </div>
+        )}
       </div>
-      <div className="flex justify-end gap-2 mt-4">
+      <div className="flex items-center gap-2 mt-4">
         <Button
           variant="secondary"
+          size="sm"
+          className="gap-1.5"
           disabled={!task || copying}
           onClick={handleCopy}
         >
-          {copied ? "已复制" : copying ? "复制中..." : "复制结果"}
+          <CopyIcon className="h-3.5 w-3.5" />
+          {copied ? "已复制" : "复制"}
         </Button>
+        <div className="flex-1" />
         {FORMAT_LABELS.map(({ format, label }) => (
           <Button
             key={format}
             variant="secondary"
+            size="sm"
+            className="gap-1.5 min-w-[72px]"
             disabled={!canExport || saving !== null}
             onClick={() => handleExport(format)}
-            className="w-24"
           >
             {saving === format ? (
-              <span className="flex items-center gap-1">
-                <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
-                导出中
-              </span>
+              <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
             ) : (
-              label
+              <DownloadIcon className="h-3.5 w-3.5" />
             )}
+            {label}
           </Button>
         ))}
       </div>

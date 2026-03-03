@@ -22,6 +22,9 @@ MODEL_NAME = "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17"
 
 IS_WINDOWS = sys.platform == "win32"
 
+# Silero VAD model
+SILERO_VAD_URL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx"
+
 
 def check_bz2_support() -> bool:
     """Check if bz2 module is available for tarfile."""
@@ -193,19 +196,29 @@ def download_models(cache_dir: Path) -> None:
 def get_default_cache_dir() -> Path:
     """Get the default cache directory based on platform."""
     if IS_WINDOWS:
-        # Use LOCALAPPDATA on Windows
         local_app_data = os.environ.get("LOCALAPPDATA")
         if local_app_data:
             return Path(local_app_data) / "sherpa-onnx" / "sense-voice"
         else:
             return Path.home() / ".cache" / "sherpa-onnx" / "sense-voice"
     else:
-        # Use XDG cache or ~/.cache on Unix
         xdg_cache = os.environ.get("XDG_CACHE_HOME")
         if xdg_cache:
             return Path(xdg_cache) / "sherpa-onnx" / "sense-voice"
         else:
             return Path.home() / ".cache" / "sherpa-onnx" / "sense-voice"
+
+
+def download_silero_vad(cache_root: Path) -> None:
+    """Download Silero VAD model to the sherpa-onnx cache directory."""
+    vad_path = cache_root / "silero_vad.onnx"
+    if vad_path.exists():
+        print(f"Silero VAD already exists: {vad_path} ({vad_path.stat().st_size / 1024 / 1024:.1f} MB)")
+        return
+
+    cache_root.mkdir(parents=True, exist_ok=True)
+    download_file(SILERO_VAD_URL, vad_path, "Downloading Silero VAD model")
+    print(f"Silero VAD downloaded: {vad_path} ({vad_path.stat().st_size / 1024 / 1024:.1f} MB)")
 
 
 if __name__ == "__main__":
@@ -220,6 +233,7 @@ if __name__ == "__main__":
 
     try:
         download_models(cache_dir)
+        download_silero_vad(cache_dir.parent)
     except Exception as e:
         print(f"\n[ERROR] Error downloading models: {e}", file=sys.stderr)
         sys.exit(1)

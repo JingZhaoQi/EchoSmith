@@ -4,7 +4,7 @@ import { useMutation } from "@tanstack/react-query";
 import { UploadIcon, PlayIcon, FileAudioIcon, XIcon, CheckIcon } from "lucide-react";
 
 import { Button } from "./ui/button";
-import { createTaskFromFile, autoExportTask } from "../lib/api";
+import { createTaskFromFile, createTaskFromPath, autoExportTask } from "../lib/api";
 import { useTasksStore } from "../hooks/useTasksStore";
 
 type ExportFormat = "txt" | "srt" | "json";
@@ -86,6 +86,43 @@ export function BatchTaskComposer(): JSX.Element {
     return () => window.removeEventListener("clearAllFiles", handleClearAll);
   }, []);
 
+  // Tauri native drag-and-drop (provides full file paths)
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+
+    const setup = async () => {
+      try {
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+
+        unlisten = await getCurrentWindow().onDragDropEvent((event) => {
+          if (event.payload.type === "enter") {
+            setIsDragging(true);
+          } else if (event.payload.type === "drop") {
+            setIsDragging(false);
+            const paths = event.payload.paths;
+            const newFiles: BatchFile[] = [];
+
+            for (const filePath of paths) {
+              const fileName = filePath.split(/[\\/]/).pop() || filePath;
+              // Don't read file content — backend reads directly from path
+              const file = new File([], fileName);
+              newFiles.push({ file, path: filePath, status: "pending" });
+            }
+
+            if (newFiles.length > 0) {
+              setBatchFiles((prev) => [...prev, ...newFiles]);
+            }
+          }
+        });
+      } catch (error) {
+        console.warn("Drag-drop setup failed (not in Tauri?):", error);
+      }
+    };
+
+    setup();
+    return () => { unlisten?.(); };
+  }, []);
+
   const mutation = useMutation({
     mutationFn: async () => {
       if (batchFiles.length === 0) {
@@ -122,8 +159,10 @@ export function BatchTaskComposer(): JSX.Element {
             )
           );
 
-          // Create task
-          const taskId = await createTaskFromFile(batchFile.file);
+          // Create task — use direct path when available (avoids file corruption)
+          const taskId = batchFile.path
+            ? await createTaskFromPath(batchFile.path)
+            : await createTaskFromFile(batchFile.file);
 
           // Check again after async operation
           if (useTasksStore.getState().userClearedAll) {
@@ -147,7 +186,7 @@ export function BatchTaskComposer(): JSX.Element {
             message: "排队中",
             result_text: "",
             segments: [],
-            source: { type: "upload", name: batchFile.file.name },
+            source: { type: batchFile.path ? "local" : "upload", name: batchFile.file.name },
             error: null,
             logs: [],
             created_at: Date.now() / 1000,
@@ -261,105 +300,35 @@ export function BatchTaskComposer(): JSX.Element {
     });
   };
 
+  // Use Tauri dialog with explicit extensions (bypasses WebKit MIME bug #242110)
   const handleFileSelect = async () => {
-    console.log("[BatchTaskComposer] handleFileSelect called");
-
     try {
-      console.log("[BatchTaskComposer] Importing dialog plugin...");
       const { open } = await import("@tauri-apps/plugin-dialog");
-      console.log("[BatchTaskComposer] Dialog plugin imported successfully");
-      console.log("[BatchTaskComposer] Opening file dialog...");
       const selected = await open({
         multiple: true,
         filters: [
           {
             name: "Audio/Video",
             extensions: [
-              // Audio formats (include uppercase variants for macOS)
-              "mp3", "MP3", "wav", "WAV", "m4a", "M4A", 
-              "flac", "FLAC", "ogg", "OGG", "aac", "AAC", 
+              "mp3", "MP3", "wav", "WAV", "m4a", "M4A",
+              "flac", "FLAC", "ogg", "OGG", "aac", "AAC",
               "wma", "WMA", "aiff", "AIFF", "caf", "CAF",
-              // Video formats
-              "mp4", "MP4", "mov", "MOV", "avi", "AVI", 
+              "mp4", "MP4", "mov", "MOV", "avi", "AVI",
               "mkv", "MKV", "webm", "WEBM", "m4v", "M4V"
             ],
           },
         ],
       });
-      console.log("[BatchTaskComposer] File dialog result:", selected);
 
-      if (!selected) {
-        console.log("[BatchTaskComposer] User cancelled file selection");
-        return; // User cancelled
-      }
+      if (!selected || selected.length === 0) return;
 
-      const toPath = (entry: unknown): string | null => {
-        if (typeof entry === "string") {
-          return entry;
-        }
-        if (entry && typeof entry === "object" && "path" in entry) {
-          const candidate = (entry as { path?: unknown }).path;
-          return typeof candidate === "string" ? candidate : null;
-        }
-        return null;
-      };
-
-      const filePaths: string[] = [];
-      if (Array.isArray(selected)) {
-        selected.forEach((entry) => {
-          const path = toPath(entry);
-          if (path) {
-            filePaths.push(path);
-          }
-        });
-      } else {
-        const singlePath = toPath(selected);
-        if (singlePath) {
-          filePaths.push(singlePath);
-        }
-      }
-
-      if (filePaths.length === 0) {
-        console.warn("[BatchTaskComposer] No valid file paths from dialog");
-        return;
-      }
-
-      // For each path, we need to create a File object
-      // In Tauri, we can read the file and create a Blob
-      const { readFile } = await import("@tauri-apps/plugin-fs");
-
-      const newFiles: BatchFile[] = [];
-
-      for (const filePath of filePaths) {
-        try {
-          // Extract filename from path
-          const fileName = filePath.split(/[\\/]/).pop() || filePath;
-
-          // Read file content
-          const fileContent = await readFile(filePath);
-
-          // Create File object from Uint8Array
-          const blob = new Blob([fileContent]);
-          const file = new File([blob], fileName, {
-            type: 'application/octet-stream'
-          });
-
-          newFiles.push({
-            file,
-            path: filePath,  // Store the full path
-            status: "pending",
-          });
-        } catch (error) {
-          console.error(`Failed to read file ${filePath}:`, error);
-        }
-      }
-
-      if (newFiles.length > 0) {
-        setBatchFiles((prev) => [...prev, ...newFiles]);
-      }
+      const newFiles: BatchFile[] = selected.map((filePath) => {
+        const fileName = filePath.split(/[\\/]/).pop() || filePath;
+        return { file: new File([], fileName), path: filePath, status: "pending" as const };
+      });
+      setBatchFiles((prev) => [...prev, ...newFiles]);
     } catch (error) {
-      console.error("Failed to select files:", error);
-      alert("选择文件失败: " + (error instanceof Error ? error.message : "未知错误"));
+      console.error("File dialog failed:", error);
     }
   };
 
@@ -386,10 +355,16 @@ export function BatchTaskComposer(): JSX.Element {
     mutation.mutate();
   };
 
+  const allDone =
+    batchFiles.length > 0 &&
+    !mutation.isPending &&
+    batchFiles.every((f) => f.status === "completed" || f.status === "failed");
+
   const canStart =
     batchFiles.length > 0 &&
     exportFormats.size > 0 &&
-    !mutation.isPending;
+    !mutation.isPending &&
+    !allDone;
 
   return (
     <form
@@ -431,8 +406,8 @@ export function BatchTaskComposer(): JSX.Element {
         <div
           className={`flex flex-col items-center justify-center rounded-[16px] border-2 border-dashed transition-all duration-200 px-5 py-8 text-center cursor-pointer group ${
             isDragging
-              ? "border-indigo-500 bg-indigo-500/10 dark:bg-indigo-400/10"
-              : "border-black/10 dark:border-white/10 bg-black/[0.02] dark:bg-white/[0.02] hover:bg-black/[0.04] dark:hover:bg-white/[0.04] hover:border-black/20 dark:hover:border-white/20"
+              ? "border-indigo-400 bg-indigo-50/50 dark:bg-indigo-400/10"
+              : "border-black/15 dark:border-white/15 bg-black/[0.02] dark:bg-white/[0.02] hover:bg-black/[0.04] dark:hover:bg-white/[0.04] hover:border-black/25 dark:hover:border-white/25"
           }`}
           onClick={handleFileSelect}
           onDragOver={handleDragOver}
@@ -452,12 +427,12 @@ export function BatchTaskComposer(): JSX.Element {
               : "bg-indigo-500/10 dark:bg-indigo-400/10 group-hover:bg-indigo-500/15 dark:group-hover:bg-indigo-400/15"
           }`}>
             <UploadIcon
-              className="h-7 w-7 text-indigo-600 dark:text-indigo-400"
+              className="h-8 w-8 text-indigo-600 dark:text-indigo-400"
               strokeWidth={2.5}
             />
           </div>
           <p className="text-sm font-semibold text-gray-900 dark:text-white mb-1">
-            {isDragging ? "松开以添加文件" : "点击或拖拽文件"}
+            {isDragging ? "松开以添加文件" : "点击选择或拖拽文件到此处"}
           </p>
           <p className="text-xs text-gray-500 dark:text-gray-400">
             支持 MP3 / WAV / M4A / MP4 / MOV 等常见格式
@@ -504,17 +479,24 @@ export function BatchTaskComposer(): JSX.Element {
       {/* Start button */}
       <div className="flex items-center gap-3 pt-2">
         <Button
-          type="submit"
+          type={allDone ? "button" : "submit"}
           variant="default"
-          className="gap-2 flex-1"
-          disabled={!canStart}
+          className={`gap-2 flex-1 transition-colors duration-500 ${
+            allDone ? "!bg-emerald-500 hover:!bg-emerald-600 !shadow-none" : ""
+          }`}
+          disabled={!canStart && !allDone}
+          onClick={allDone ? () => { setBatchFiles([]); setWasInterrupted(false); } : undefined}
         >
-          <PlayIcon className="h-4 w-4" />
-          {mutation.isPending
-            ? `处理中 (${batchFiles.filter((f) => f.status === "completed").length}/${batchFiles.length})`
-            : wasInterrupted
-            ? `继续转写 (剩余 ${batchFiles.filter((f) => f.status === "pending").length} 个文件)`
-            : `开始转写 (${batchFiles.length} 个文件)`}
+          {allDone ? (
+            <><CheckIcon className="h-4 w-4" /> 全部完成</>
+          ) : (
+            <><PlayIcon className="h-4 w-4" />
+            {mutation.isPending
+              ? `处理中 (${batchFiles.filter((f) => f.status === "completed").length}/${batchFiles.length})`
+              : wasInterrupted
+              ? `继续转写 (剩余 ${batchFiles.filter((f) => f.status === "pending").length} 个文件)`
+              : `开始转写 (${batchFiles.length} 个文件)`}</>
+          )}
         </Button>
       </div>
 

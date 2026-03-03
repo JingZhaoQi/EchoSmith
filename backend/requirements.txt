@@ -1,4 +1,7 @@
 fastapi>=0.110
 uvicorn[standard]>=0.29
-sherpa-onnx>=1.10.0
+sherpa-onnx>=1.12.28,<2
+numpy>=1.24
 python-multipart>=0.0.6
+yt-dlp>=2024.1.0
+certifi

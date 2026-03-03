@@ -8,13 +8,23 @@ from pathlib import Path
 
 import uvicorn
 
-# Set MODELSCOPE_CACHE and PATH early if running from PyInstaller bundle
+# Set MODELSCOPE_CACHE, SSL certs, and PATH early if running from PyInstaller bundle
 if getattr(sys, "frozen", False):
     bundle_dir = Path(sys._MEIPASS)  # type: ignore
     bundled_models = bundle_dir / "models_cache"
     if bundled_models.exists():
         os.environ["MODELSCOPE_CACHE"] = str(bundled_models)
         print(f"[INIT] Set MODELSCOPE_CACHE to: {bundled_models}")
+
+    # Fix SSL certificate verification in PyInstaller bundle.
+    # Bundled Python can't find system CA certs; use certifi's CA bundle.
+    try:
+        import certifi
+        os.environ["SSL_CERT_FILE"] = certifi.where()
+        os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()
+        print(f"[INIT] SSL_CERT_FILE set to: {certifi.where()}")
+    except ImportError:
+        print("[WARN] certifi not available, SSL may fail")
 
     # Check for bundled ffmpeg
     bundled_ffmpeg = bundle_dir / "ffmpeg_bin"
@@ -23,6 +33,9 @@ if getattr(sys, "frozen", False):
     if bundled_ffmpeg.exists():
         # Use bundled ffmpeg first
         os.environ["PATH"] = str(bundled_ffmpeg) + os.pathsep + current_path
+        # Let dyld find bundled dylibs when ffmpeg/ffprobe run as subprocesses
+        os.environ["DYLD_LIBRARY_PATH"] = str(bundled_ffmpeg)
+        os.environ["DYLD_FALLBACK_LIBRARY_PATH"] = str(bundled_ffmpeg)
         print(f"[INIT] Using bundled ffmpeg from: {bundled_ffmpeg}")
     else:
         # Fall back to system PATH with common locations

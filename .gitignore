@@ -163,6 +163,9 @@ temp/
 .gyp
 .gyprc
 
+# ffmpeg binaries (build artifact)
+ffmpeg_bin/
+
 # Backend build output
 tauri_backend_dist/
 tauri/src-tauri/backend/*
