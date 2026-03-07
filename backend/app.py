@@ -22,7 +22,7 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 try:
     from asr_engine import ASREngine
@@ -679,8 +679,10 @@ async def export_task(
 async def download_media_endpoint(
     request: Request,
     _: None = Depends(verify_token),
-) -> JSONResponse:
-    """Download video or audio from URL to a specified directory."""
+) -> StreamingResponse:
+    """Download video or audio from URL, streaming progress via NDJSON."""
+    import json as _json
+
     body = await request.json()
     raw_url = body.get("url", "").strip()
     mode = body.get("mode", "video")  # "video" or "audio"
@@ -694,12 +696,43 @@ async def download_media_endpoint(
         raise HTTPException(status_code=400, detail="mode 必须是 video 或 audio")
 
     url = extract_url_from_text(raw_url)
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[dict | None] = asyncio.Queue()
 
-    try:
-        result = await asyncio.get_running_loop().run_in_executor(
-            None,
-            lambda: download_media(url, save_dir, mode),
+    def progress_cb(ratio: float, message: str) -> None:
+        loop.call_soon_threadsafe(
+            queue.put_nowait,
+            {"type": "progress", "ratio": ratio, "message": message},
         )
-        return JSONResponse(result)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    async def generate():
+        def _run():
+            return download_media(url, save_dir, mode, progress_cb=progress_cb)
+
+        task = loop.run_in_executor(None, _run)
+
+        # Drain progress events while download runs
+        while True:
+            done = task.done()
+            # Flush all queued events
+            while not queue.empty():
+                event = queue.get_nowait()
+                if event is not None:
+                    yield _json.dumps(event, ensure_ascii=False) + "\n"
+            if done:
+                break
+            # Wait a short interval or until the task completes
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=0.25)
+                if event is not None:
+                    yield _json.dumps(event, ensure_ascii=False) + "\n"
+            except asyncio.TimeoutError:
+                pass
+
+        try:
+            result = task.result()
+            yield _json.dumps({"type": "done", **result}, ensure_ascii=False) + "\n"
+        except Exception as exc:
+            yield _json.dumps({"type": "error", "detail": str(exc)}, ensure_ascii=False) + "\n"
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson")

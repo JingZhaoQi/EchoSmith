@@ -226,18 +226,92 @@ export async function cancelTask(id: string): Promise<void> {
   await apiClient.delete(`/tasks/${id}`);
 }
 
+export interface DownloadProgress {
+  type: "progress";
+  ratio: number;
+  message: string;
+}
+
+export interface DownloadDone {
+  type: "done";
+  filename: string;
+  path: string;
+}
+
+export interface DownloadError {
+  type: "error";
+  detail: string;
+}
+
+export type DownloadEvent = DownloadProgress | DownloadDone | DownloadError;
+
 export async function downloadMedia(
   url: string,
   saveDir: string,
-  mode: "video" | "audio"
+  mode: "video" | "audio",
+  onProgress?: (ratio: number, message: string) => void,
 ): Promise<{ filename: string; path: string }> {
   await ensureBackendBase();
-  const response = await apiClient.post<{ filename: string; path: string }>("/download", {
-    url,
-    save_dir: saveDir,
-    mode,
+
+  const base = apiClient.defaults.baseURL ?? baseURL;
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (backendToken) {
+    headers["Authorization"] = `Bearer ${backendToken}`;
+  }
+
+  const res = await fetch(`${base}/download`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ url, save_dir: saveDir, mode }),
   });
-  return response.data;
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `下载失败 (${res.status})`);
+  }
+
+  const reader = res.body?.getReader();
+  if (!reader) throw new Error("无法读取下载流");
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let result: { filename: string; path: string } | null = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (value) buffer += decoder.decode(value, { stream: true });
+
+    // Process complete NDJSON lines
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const event: DownloadEvent = JSON.parse(line);
+      if (event.type === "progress" && onProgress) {
+        onProgress(event.ratio, event.message);
+      } else if (event.type === "done") {
+        result = { filename: event.filename, path: event.path };
+      } else if (event.type === "error") {
+        throw new Error(event.detail);
+      }
+    }
+
+    if (done) break;
+  }
+
+  // Process any remaining buffer
+  if (buffer.trim()) {
+    const event: DownloadEvent = JSON.parse(buffer);
+    if (event.type === "done") {
+      result = { filename: event.filename, path: event.path };
+    } else if (event.type === "error") {
+      throw new Error(event.detail);
+    }
+  }
+
+  if (!result) throw new Error("下载完成但未收到结果");
+  return result;
 }
 
 export async function exportTask(id: string, format: "txt" | "srt" | "json"): Promise<Blob> {

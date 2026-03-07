@@ -27,7 +27,8 @@ _BROWSER_ORDER = (
 )
 
 _AUTH_ERROR_RE = re.compile(
-    r"Sign in to confirm|not a bot|cookies|login required", re.IGNORECASE
+    r"Sign in to confirm|not a bot|cookies|login required|Requested format is not available",
+    re.IGNORECASE,
 )
 
 # Douyin / TikTok China short-link and canonical patterns
@@ -308,28 +309,46 @@ def _sanitize_filename(name: str) -> str:
     return name[:200] if name else "download"
 
 
-def download_media(url: str, save_dir: str, mode: str = "video") -> dict:
+ProgressCb = Optional[Callable[[float, str], None]]
+
+
+def download_media(
+    url: str, save_dir: str, mode: str = "video", progress_cb: ProgressCb = None,
+) -> dict:
     """Download video or audio-only to *save_dir*. Returns {filename, path}."""
     save_path = Path(save_dir)
     save_path.mkdir(parents=True, exist_ok=True)
 
     if _DOUYIN_RE.search(url):
-        return _douyin_download_media(url, save_path, mode)
+        return _douyin_download_media(url, save_path, mode, progress_cb)
 
-    return _ytdlp_download_media(url, save_path, mode)
+    return _ytdlp_download_media(url, save_path, mode, progress_cb)
 
 
-def _ytdlp_download_media(url: str, save_path: Path, mode: str) -> dict:
+def _ytdlp_download_media(
+    url: str, save_path: Path, mode: str, progress_cb: ProgressCb = None,
+) -> dict:
     """Download via yt-dlp to save_path."""
-    # Use a temp name first, then rename to title-based name
     tmp_id = uuid.uuid4().hex[:8]
     outtmpl = str(save_path / f"_tmp_{tmp_id}.%(ext)s")
+
+    def _hook(d: dict) -> None:
+        if not progress_cb:
+            return
+        if d.get("status") == "downloading":
+            total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+            downloaded = d.get("downloaded_bytes", 0)
+            ratio = downloaded / total if total > 0 else 0.0
+            progress_cb(ratio * 0.9, f"下载中 {ratio:.0%}")
+        elif d.get("status") == "finished":
+            progress_cb(0.9, "合并/转码中…")
 
     opts: dict = {
         "outtmpl": outtmpl,
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
+        "progress_hooks": [_hook],
     }
 
     if mode == "audio":
@@ -342,10 +361,9 @@ def _ytdlp_download_media(url: str, save_path: Path, mode: str) -> dict:
             }
         ]
     else:
-        opts["format"] = "bestvideo+bestaudio/best"
+        opts["format"] = "bv*+ba/b"
         opts["merge_output_format"] = "mp4"
 
-    # Try plain, then with cookies
     last_err: Exception | None = None
     for attempt_opts in _ytdlp_attempt_opts(opts):
         try:
@@ -355,25 +373,30 @@ def _ytdlp_download_media(url: str, save_path: Path, mode: str) -> dict:
             break
         except Exception as e:
             last_err = e
-            # Clean partial
             for f in save_path.glob(f"_tmp_{tmp_id}.*"):
                 f.unlink(missing_ok=True)
             if not _AUTH_ERROR_RE.search(str(e)):
                 raise
     else:
+        err_str = str(last_err)
+        if _AUTH_ERROR_RE.search(err_str) or "Sign in" in err_str:
+            raise RuntimeError(
+                "该视频需要登录认证才能下载。"
+                "请在 Chrome 浏览器中登录 YouTube，然后重试。"
+            )
         raise RuntimeError(f"下载失败: {last_err}")
 
     # Rename temp files to title-based name
-    ext = "mp3" if mode == "audio" else "mp4"
     for f in save_path.glob(f"_tmp_{tmp_id}.*"):
         final_name = f"{title}.{f.suffix.lstrip('.')}"
         final_path = save_path / final_name
-        # Avoid overwrite
         counter = 1
         while final_path.exists():
             final_path = save_path / f"{title} ({counter}).{f.suffix.lstrip('.')}"
             counter += 1
         f.rename(final_path)
+        if progress_cb:
+            progress_cb(1.0, "完成")
         return {"filename": final_path.name, "path": str(final_path)}
 
     raise FileNotFoundError("下载完成但未找到输出文件")
@@ -388,8 +411,13 @@ def _ytdlp_attempt_opts(base_opts: dict):
         yield cookie_opts
 
 
-def _douyin_download_media(url: str, save_path: Path, mode: str) -> dict:
+def _douyin_download_media(
+    url: str, save_path: Path, mode: str, progress_cb: ProgressCb = None,
+) -> dict:
     """Download Douyin video or audio to save_path."""
+    if progress_cb:
+        progress_cb(0.0, "解析抖音链接…")
+
     video_id = _douyin_resolve_video_id(url)
     info = _douyin_fetch_video_info(video_id)
     video_url = info["video_url"]
@@ -409,11 +437,19 @@ def _douyin_download_media(url: str, save_path: Path, mode: str) -> dict:
 
     with requests.get(video_url, headers=headers, stream=True, timeout=60) as r:
         r.raise_for_status()
+        total = int(r.headers.get("Content-Length", 0))
+        downloaded = 0
         with open(mp4_path, "wb") as f:
             for chunk in r.iter_content(chunk_size=1024 * 256):
                 f.write(chunk)
+                downloaded += len(chunk)
+                if progress_cb and total > 0:
+                    ratio = downloaded / total
+                    progress_cb(ratio * 0.9, f"下载中 {ratio:.0%}")
 
     if mode == "audio":
+        if progress_cb:
+            progress_cb(0.9, "转码中…")
         # Extract audio to mp3
         mp3_path = mp4_path.with_suffix(".mp3")
         cmd = [
@@ -424,8 +460,12 @@ def _douyin_download_media(url: str, save_path: Path, mode: str) -> dict:
         mp4_path.unlink(missing_ok=True)
         if result.returncode != 0:
             raise RuntimeError(f"ffmpeg 音频提取失败: {result.stderr.strip()}")
+        if progress_cb:
+            progress_cb(1.0, "完成")
         return {"filename": mp3_path.name, "path": str(mp3_path)}
 
+    if progress_cb:
+        progress_cb(1.0, "完成")
     return {"filename": mp4_path.name, "path": str(mp4_path)}
 
 

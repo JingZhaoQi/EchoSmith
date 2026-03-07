@@ -1,5 +1,5 @@
 // URL-based task creation form for EchoSmith online video transcription.
-import { FormEvent, useState } from "react";
+import { FormEvent, useCallback, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import {
   LinkIcon,
@@ -8,6 +8,7 @@ import {
   VideoIcon,
   Music2Icon,
   CheckCircle2Icon,
+  DownloadIcon,
 } from "lucide-react";
 
 import { Button } from "./ui/button";
@@ -21,6 +22,8 @@ function extractUrl(text: string): string {
 
 export function UrlTaskComposer(): JSX.Element {
   const [url, setUrl] = useState("");
+  const [dlProgress, setDlProgress] = useState<{ ratio: number; message: string } | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
 
   const upsertTask = useTasksStore((state) => state.upsertTask);
   const setActiveTask = useTasksStore((state) => state.setActiveTask);
@@ -51,11 +54,26 @@ export function UrlTaskComposer(): JSX.Element {
     },
   });
 
+  const showToast = useCallback((msg: string) => {
+    setToast(msg);
+    setTimeout(() => setToast(null), 3000);
+  }, []);
+
   const dlMutation = useMutation({
     mutationFn: async ({ rawUrl, mode }: { rawUrl: string; mode: "video" | "audio" }) => {
       const { downloadDir } = await import("@tauri-apps/api/path");
       const saveDir = await downloadDir();
-      return downloadMedia(rawUrl, saveDir, mode);
+      setDlProgress({ ratio: 0, message: "准备下载…" });
+      return downloadMedia(rawUrl, saveDir, mode, (ratio, message) => {
+        setDlProgress({ ratio, message });
+      });
+    },
+    onSuccess: (data) => {
+      setDlProgress(null);
+      showToast(`已保存到 Downloads 目录：${data.filename}`);
+    },
+    onError: () => {
+      setDlProgress(null);
     },
   });
 
@@ -72,7 +90,6 @@ export function UrlTaskComposer(): JSX.Element {
     event.preventDefault();
     const trimmed = url.trim();
     if (!trimmed) return;
-    // Send raw text — backend will extract URL if needed
     mutation.mutate(trimmed);
   };
 
@@ -141,55 +158,61 @@ export function UrlTaskComposer(): JSX.Element {
             </p>
           </div>
         )}
-        {dlMutation.isPending && (
-          <div className="flex items-center gap-2 px-4 py-3 rounded-xl bg-emerald-500/5 dark:bg-emerald-400/5 border border-emerald-500/10 dark:border-emerald-400/10">
-            <div className="h-4 w-4 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin flex-shrink-0" />
-            <p className="text-xs text-emerald-700 dark:text-emerald-300">
-              正在下载，请稍候…
-            </p>
-          </div>
-        )}
-        {dlMutation.isSuccess && (
-          <div className="flex items-center gap-2 px-4 py-3 rounded-xl bg-emerald-500/5 dark:bg-emerald-400/5 border border-emerald-500/10 dark:border-emerald-400/10">
-            <CheckCircle2Icon className="h-4 w-4 text-emerald-600 dark:text-emerald-400 flex-shrink-0" />
-            <p className="text-xs text-emerald-700 dark:text-emerald-300">
-              已保存到 Downloads：{dlMutation.data?.filename}
-            </p>
+
+        {/* Download progress bar */}
+        {dlMutation.isPending && dlProgress && (
+          <div className="px-4 py-3 rounded-xl bg-emerald-500/5 dark:bg-emerald-400/5 border border-emerald-500/10 dark:border-emerald-400/10">
+            <div className="flex items-center gap-2 mb-2">
+              <DownloadIcon className="h-4 w-4 text-emerald-600 dark:text-emerald-400 flex-shrink-0" />
+              <p className="text-xs text-emerald-700 dark:text-emerald-300 flex-1">
+                {dlProgress.message}
+              </p>
+            </div>
+            <div className="h-1.5 rounded-full bg-emerald-200/60 dark:bg-emerald-900/40 overflow-hidden">
+              <div
+                className="h-full rounded-full bg-emerald-500 dark:bg-emerald-400 transition-all duration-300 ease-out"
+                style={{ width: `${Math.min(dlProgress.ratio * 100, 100)}%` }}
+              />
+            </div>
           </div>
         )}
       </div>
 
-      {/* Action buttons */}
-      <div className="flex items-center gap-2 pt-2">
+      {/* Transcribe button */}
+      <div className="flex flex-col gap-2 pt-2">
         <Button
           type="submit"
           variant="default"
-          className="gap-2 flex-1"
+          className="gap-2 w-full"
           disabled={!canStart}
         >
           <PlayIcon className="h-4 w-4" />
           {mutation.isPending ? "创建中…" : "开始转写"}
         </Button>
-        <Button
-          type="button"
-          variant="secondary"
-          className="gap-1.5"
-          disabled={!canDownload}
-          onClick={() => handleDownload("video")}
-        >
-          <VideoIcon className="h-4 w-4" />
-          视频
-        </Button>
-        <Button
-          type="button"
-          variant="secondary"
-          className="gap-1.5"
-          disabled={!canDownload}
-          onClick={() => handleDownload("audio")}
-        >
-          <Music2Icon className="h-4 w-4" />
-          音频
-        </Button>
+
+        {/* Download buttons */}
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            variant="secondary"
+            className="gap-1.5 flex-1"
+            disabled={!canDownload}
+            onClick={() => handleDownload("video")}
+          >
+            <VideoIcon className="h-4 w-4" />
+            下载视频
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            className="gap-1.5 flex-1"
+            disabled={!canDownload}
+            onClick={() => handleDownload("audio")}
+          >
+            <Music2Icon className="h-4 w-4" />
+            下载音频
+          </Button>
+        </div>
       </div>
 
       {mutation.isError && (
@@ -201,6 +224,16 @@ export function UrlTaskComposer(): JSX.Element {
         <p className="text-xs text-red-600 dark:text-red-400">
           {(dlMutation.error as Error).message || "下载失败"}
         </p>
+      )}
+
+      {/* Toast notification */}
+      {toast && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 animate-in fade-in slide-in-from-bottom-4 duration-300">
+          <div className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-zinc-800/80 dark:bg-zinc-700/80 backdrop-blur-sm text-white/90 shadow-md min-w-[320px] max-w-[480px]">
+            <CheckCircle2Icon className="h-3.5 w-3.5 flex-shrink-0 text-emerald-400" />
+            <span className="text-xs">{toast}</span>
+          </div>
+        </div>
       )}
     </form>
   );
