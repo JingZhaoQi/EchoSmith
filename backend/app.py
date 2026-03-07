@@ -27,11 +27,11 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 try:
     from asr_engine import ASREngine
     from task_store import TaskRecord, TaskStatus, task_store
-    from url_downloader import download_audio, extract_video_title
+    from url_downloader import download_audio, extract_url_from_text, extract_video_title
 except ImportError:
     from .asr_engine import ASREngine
     from .task_store import TaskRecord, TaskStatus, task_store
-    from .url_downloader import download_audio, extract_video_title
+    from .url_downloader import download_audio, extract_url_from_text, extract_video_title
 
 
 class TaskControl:
@@ -209,11 +209,14 @@ async def create_task_from_url(
     _: None = Depends(verify_token),
 ) -> JSONResponse:
     body = await request.json()
-    url = body.get("url", "").strip()
+    raw_url = body.get("url", "").strip()
     language = body.get("language", "zh")
 
-    if not url:
+    if not raw_url:
         raise HTTPException(status_code=400, detail="URL 不能为空")
+
+    # Extract actual URL from share text (e.g. Douyin paste includes extra text)
+    url = extract_url_from_text(raw_url)
 
     task_id = uuid.uuid4().hex
     cleanup_paths: list[str] = []

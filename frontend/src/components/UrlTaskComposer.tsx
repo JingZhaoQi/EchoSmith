@@ -39,10 +39,15 @@ export function UrlTaskComposer(): JSX.Element {
     },
   });
 
+  const extractUrl = (text: string): string => {
+    const m = text.match(/https?:\/\/[^\s<>"']+/);
+    return m ? m[0].replace(/[,.;:!?。，；：！？]+$/, "") : text.trim();
+  };
+
   const handlePaste = async () => {
     try {
       const text = await navigator.clipboard.readText();
-      if (text) setUrl(text.trim());
+      if (text) setUrl(extractUrl(text));
     } catch {
       // Clipboard access denied - ignore
     }
@@ -52,6 +57,7 @@ export function UrlTaskComposer(): JSX.Element {
     event.preventDefault();
     const trimmed = url.trim();
     if (!trimmed) return;
+    // Send raw text — backend will extract URL if needed
     mutation.mutate(trimmed);
   };
 
@@ -79,10 +85,10 @@ export function UrlTaskComposer(): JSX.Element {
             <div className="relative flex-1">
               <LinkIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
               <input
-                type="url"
+                type="text"
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
-                placeholder="https://www.youtube.com/watch?v=..."
+                placeholder="粘贴视频链接或分享文本…"
                 className="w-full pl-9 pr-3 py-2.5 rounded-xl border border-black/[0.08] dark:border-white/[0.08] bg-white/60 dark:bg-zinc-800/60 text-sm placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500/50 transition-all"
               />
             </div>

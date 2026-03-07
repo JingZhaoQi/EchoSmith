@@ -1,14 +1,17 @@
-"""Download audio from online video URLs via yt-dlp."""
+"""Download audio from online video URLs via yt-dlp (+ Douyin fallback)."""
 
 from __future__ import annotations
 
+import json
 import logging
 import platform
 import re
+import subprocess
 import tempfile
 from pathlib import Path
 from typing import Callable, Optional
 
+import requests
 import yt_dlp
 
 log = logging.getLogger(__name__)
@@ -26,9 +29,27 @@ _AUTH_ERROR_RE = re.compile(
     r"Sign in to confirm|not a bot|cookies|login required", re.IGNORECASE
 )
 
+# Douyin / TikTok China short-link and canonical patterns
+_DOUYIN_RE = re.compile(
+    r"https?://(?:v\.douyin\.com|www\.douyin\.com|www\.iesdouyin\.com)/", re.IGNORECASE
+)
+
+_URL_RE = re.compile(r"https?://[^\s<>\"']+")
+
+
+def extract_url_from_text(text: str) -> str:
+    """Extract first HTTP(S) URL from arbitrary text (e.g. Douyin share text)."""
+    m = _URL_RE.search(text)
+    return m.group(0).rstrip(",.;:!?。，；：！？") if m else text
+
 
 def extract_video_title(url: str) -> str:
     """Extract video title without downloading.  Never raises."""
+    if _DOUYIN_RE.search(url):
+        try:
+            return _douyin_extract_title(url)
+        except Exception:
+            return ""
     opts: dict = {"quiet": True, "no_warnings": True, "skip_download": True}
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -47,10 +68,16 @@ def download_audio(
     """Download audio track from *url* and return the local file path.
 
     Strategy:
+      0. If Douyin URL, use custom scraper (yt-dlp Douyin extractor needs cookies).
       1. Try plain download (works for Bilibili, Twitter, etc.)
       2. If the error looks auth-related, retry with browser cookies.
     """
     DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+    # --- Douyin fast path ---
+    if _DOUYIN_RE.search(url):
+        return _douyin_download(url, task_id, progress_cb, cancelled_checker)
+
     output_template = str(DOWNLOAD_DIR / f"{task_id}.%(ext)s")
 
     def _progress_hook(d: dict) -> None:
@@ -125,6 +152,153 @@ def download_audio(
         "请在浏览器中登录对应网站（如 YouTube），然后重试。\n"
         f"原始错误：{last_err}"
     )
+
+
+# ── Douyin helpers ──────────────────────────────────────────────────
+
+_DOUYIN_MOBILE_UA = (
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+    "Version/17.0 Mobile/15E148 Safari/604.1"
+)
+_DOUYIN_VIDEO_ID_RE = re.compile(r"/video/(\d+)")
+
+
+def _douyin_resolve_video_id(url: str) -> str:
+    """Follow redirects to extract the numeric video ID."""
+    m = _DOUYIN_VIDEO_ID_RE.search(url)
+    if m:
+        return m.group(1)
+    # Short link: follow redirect chain
+    r = requests.get(
+        url,
+        allow_redirects=True,
+        headers={"User-Agent": _DOUYIN_MOBILE_UA},
+        timeout=10,
+    )
+    m = _DOUYIN_VIDEO_ID_RE.search(r.url)
+    if m:
+        return m.group(1)
+    # Also check intermediate redirects
+    for resp in r.history:
+        m = _DOUYIN_VIDEO_ID_RE.search(resp.headers.get("Location", ""))
+        if m:
+            return m.group(1)
+    raise RuntimeError(f"无法从抖音链接中提取视频 ID: {url}")
+
+
+def _douyin_fetch_video_info(video_id: str) -> dict:
+    """Fetch video metadata from Douyin mobile share page."""
+    headers = {
+        "User-Agent": _DOUYIN_MOBILE_UA,
+        "Referer": "https://www.douyin.com/",
+    }
+    r = requests.get(
+        f"https://www.iesdouyin.com/share/video/{video_id}/",
+        headers=headers,
+        timeout=15,
+    )
+    r.raise_for_status()
+
+    m = re.search(
+        r"window\._ROUTER_DATA\s*=\s*({.*?})\s*</script>", r.text, re.DOTALL
+    )
+    if not m:
+        raise RuntimeError("无法解析抖音页面数据")
+
+    data = json.loads(m.group(1).replace("\\u002F", "/"))
+    page_data = data.get("loaderData", {}).get("video_(id)/page", {})
+    s = json.dumps(page_data, ensure_ascii=False)
+
+    # Extract play URL
+    play_match = re.search(
+        r'"play_addr".*?"url_list"\s*:\s*\[(.*?)\]', s, re.DOTALL
+    )
+    if not play_match:
+        raise RuntimeError("无法获取抖音视频播放地址")
+    urls = json.loads("[" + play_match.group(1) + "]")
+    video_url = urls[0] if urls else ""
+    if not video_url:
+        raise RuntimeError("抖音视频播放地址为空")
+
+    title_match = re.search(r'"desc"\s*:\s*"([^"]*)"', s)
+    title = title_match.group(1) if title_match else ""
+
+    return {"video_url": video_url, "title": title}
+
+
+def _douyin_extract_title(url: str) -> str:
+    """Extract title from Douyin URL without downloading."""
+    video_id = _douyin_resolve_video_id(url)
+    info = _douyin_fetch_video_info(video_id)
+    return info.get("title", "")
+
+
+def _douyin_download(
+    url: str,
+    task_id: str,
+    progress_cb: Optional[Callable[[float, str], None]] = None,
+    cancelled_checker: Optional[Callable[[], bool]] = None,
+) -> str:
+    """Download audio from Douyin by scraping the mobile share page."""
+    DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+    if progress_cb:
+        progress_cb(0.0, "解析抖音链接…")
+
+    video_id = _douyin_resolve_video_id(url)
+    if cancelled_checker and cancelled_checker():
+        raise _DownloadCancelled()
+
+    info = _douyin_fetch_video_info(video_id)
+    video_url = info["video_url"]
+
+    if progress_cb:
+        progress_cb(0.05, "下载抖音视频…")
+
+    # Stream download the video
+    mp4_path = DOWNLOAD_DIR / f"{task_id}.mp4"
+    headers = {
+        "User-Agent": _DOUYIN_MOBILE_UA,
+        "Referer": "https://www.douyin.com/",
+    }
+    with requests.get(video_url, headers=headers, stream=True, timeout=30) as r:
+        r.raise_for_status()
+        total = int(r.headers.get("Content-Length", 0))
+        downloaded = 0
+        with open(mp4_path, "wb") as f:
+            for chunk in r.iter_content(chunk_size=1024 * 256):
+                if cancelled_checker and cancelled_checker():
+                    mp4_path.unlink(missing_ok=True)
+                    raise _DownloadCancelled()
+                f.write(chunk)
+                downloaded += len(chunk)
+                if progress_cb and total > 0:
+                    ratio = downloaded / total
+                    progress_cb(ratio * 0.9, f"下载中 {ratio:.0%}")
+
+    if progress_cb:
+        progress_cb(0.9, "提取音频…")
+
+    # Convert to WAV using ffmpeg
+    wav_path = DOWNLOAD_DIR / f"{task_id}.wav"
+    cmd = [
+        "ffmpeg", "-y", "-i", str(mp4_path),
+        "-ac", "1", "-ar", "16000", str(wav_path),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    mp4_path.unlink(missing_ok=True)
+
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg 转换失败: {result.stderr.strip()}")
+
+    if progress_cb:
+        progress_cb(1.0, "下载完成")
+
+    return str(wav_path)
+
+
+# ── Shared helpers ──────────────────────────────────────────────────
 
 
 def _find_result(task_id: str) -> str:
