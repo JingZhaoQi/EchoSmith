@@ -226,6 +226,20 @@ export async function cancelTask(id: string): Promise<void> {
   await apiClient.delete(`/tasks/${id}`);
 }
 
+export async function downloadMedia(
+  url: string,
+  saveDir: string,
+  mode: "video" | "audio"
+): Promise<{ filename: string; path: string }> {
+  await ensureBackendBase();
+  const response = await apiClient.post<{ filename: string; path: string }>("/download", {
+    url,
+    save_dir: saveDir,
+    mode,
+  });
+  return response.data;
+}
+
 export async function exportTask(id: string, format: "txt" | "srt" | "json"): Promise<Blob> {
   await ensureBackendBase();
   const response = await apiClient.get(`/tasks/${id}/export`, {

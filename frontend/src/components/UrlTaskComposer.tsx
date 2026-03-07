@@ -1,11 +1,23 @@
 // URL-based task creation form for EchoSmith online video transcription.
 import { FormEvent, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
-import { LinkIcon, PlayIcon, ClipboardPasteIcon } from "lucide-react";
+import {
+  LinkIcon,
+  PlayIcon,
+  ClipboardPasteIcon,
+  VideoIcon,
+  Music2Icon,
+  CheckCircle2Icon,
+} from "lucide-react";
 
 import { Button } from "./ui/button";
-import { createTaskFromUrl } from "../lib/api";
+import { createTaskFromUrl, downloadMedia } from "../lib/api";
 import { useTasksStore } from "../hooks/useTasksStore";
+
+function extractUrl(text: string): string {
+  const m = text.match(/https?:\/\/[^\s<>"']+/);
+  return m ? m[0].replace(/[,.;:!?。，；：！？]+$/, "") : text.trim();
+}
 
 export function UrlTaskComposer(): JSX.Element {
   const [url, setUrl] = useState("");
@@ -39,10 +51,13 @@ export function UrlTaskComposer(): JSX.Element {
     },
   });
 
-  const extractUrl = (text: string): string => {
-    const m = text.match(/https?:\/\/[^\s<>"']+/);
-    return m ? m[0].replace(/[,.;:!?。，；：！？]+$/, "") : text.trim();
-  };
+  const dlMutation = useMutation({
+    mutationFn: async ({ rawUrl, mode }: { rawUrl: string; mode: "video" | "audio" }) => {
+      const { downloadDir } = await import("@tauri-apps/api/path");
+      const saveDir = await downloadDir();
+      return downloadMedia(rawUrl, saveDir, mode);
+    },
+  });
 
   const handlePaste = async () => {
     try {
@@ -61,7 +76,14 @@ export function UrlTaskComposer(): JSX.Element {
     mutation.mutate(trimmed);
   };
 
+  const handleDownload = (mode: "video" | "audio") => {
+    const trimmed = url.trim();
+    if (!trimmed) return;
+    dlMutation.mutate({ rawUrl: trimmed, mode });
+  };
+
   const canStart = url.trim().length > 0 && !mutation.isPending;
+  const canDownload = url.trim().length > 0 && !dlMutation.isPending;
 
   return (
     <form
@@ -110,7 +132,7 @@ export function UrlTaskComposer(): JSX.Element {
           </p>
         </div>
 
-        {/* Progress hint when running */}
+        {/* Progress hints */}
         {mutation.isPending && (
           <div className="flex items-center gap-2 px-4 py-3 rounded-xl bg-indigo-500/5 dark:bg-indigo-400/5 border border-indigo-500/10 dark:border-indigo-400/10">
             <div className="h-4 w-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin flex-shrink-0" />
@@ -119,10 +141,26 @@ export function UrlTaskComposer(): JSX.Element {
             </p>
           </div>
         )}
+        {dlMutation.isPending && (
+          <div className="flex items-center gap-2 px-4 py-3 rounded-xl bg-emerald-500/5 dark:bg-emerald-400/5 border border-emerald-500/10 dark:border-emerald-400/10">
+            <div className="h-4 w-4 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin flex-shrink-0" />
+            <p className="text-xs text-emerald-700 dark:text-emerald-300">
+              正在下载，请稍候…
+            </p>
+          </div>
+        )}
+        {dlMutation.isSuccess && (
+          <div className="flex items-center gap-2 px-4 py-3 rounded-xl bg-emerald-500/5 dark:bg-emerald-400/5 border border-emerald-500/10 dark:border-emerald-400/10">
+            <CheckCircle2Icon className="h-4 w-4 text-emerald-600 dark:text-emerald-400 flex-shrink-0" />
+            <p className="text-xs text-emerald-700 dark:text-emerald-300">
+              已保存到 Downloads：{dlMutation.data?.filename}
+            </p>
+          </div>
+        )}
       </div>
 
-      {/* Start button */}
-      <div className="flex items-center gap-3 pt-2">
+      {/* Action buttons */}
+      <div className="flex items-center gap-2 pt-2">
         <Button
           type="submit"
           variant="default"
@@ -132,11 +170,36 @@ export function UrlTaskComposer(): JSX.Element {
           <PlayIcon className="h-4 w-4" />
           {mutation.isPending ? "创建中…" : "开始转写"}
         </Button>
+        <Button
+          type="button"
+          variant="secondary"
+          className="gap-1.5"
+          disabled={!canDownload}
+          onClick={() => handleDownload("video")}
+        >
+          <VideoIcon className="h-4 w-4" />
+          视频
+        </Button>
+        <Button
+          type="button"
+          variant="secondary"
+          className="gap-1.5"
+          disabled={!canDownload}
+          onClick={() => handleDownload("audio")}
+        >
+          <Music2Icon className="h-4 w-4" />
+          音频
+        </Button>
       </div>
 
       {mutation.isError && (
         <p className="text-xs text-red-600 dark:text-red-400">
           {(mutation.error as Error).message || "创建任务失败"}
+        </p>
+      )}
+      {dlMutation.isError && (
+        <p className="text-xs text-red-600 dark:text-red-400">
+          {(dlMutation.error as Error).message || "下载失败"}
         </p>
       )}
     </form>

@@ -8,6 +8,7 @@ import platform
 import re
 import subprocess
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -296,6 +297,136 @@ def _douyin_download(
         progress_cb(1.0, "下载完成")
 
     return str(wav_path)
+
+
+# ── Media download (save to user directory) ─────────────────────────
+
+
+def _sanitize_filename(name: str) -> str:
+    """Remove characters that are invalid in file names."""
+    name = re.sub(r'[\\/:*?"<>|\n\r]', " ", name).strip()
+    return name[:200] if name else "download"
+
+
+def download_media(url: str, save_dir: str, mode: str = "video") -> dict:
+    """Download video or audio-only to *save_dir*. Returns {filename, path}."""
+    save_path = Path(save_dir)
+    save_path.mkdir(parents=True, exist_ok=True)
+
+    if _DOUYIN_RE.search(url):
+        return _douyin_download_media(url, save_path, mode)
+
+    return _ytdlp_download_media(url, save_path, mode)
+
+
+def _ytdlp_download_media(url: str, save_path: Path, mode: str) -> dict:
+    """Download via yt-dlp to save_path."""
+    # Use a temp name first, then rename to title-based name
+    tmp_id = uuid.uuid4().hex[:8]
+    outtmpl = str(save_path / f"_tmp_{tmp_id}.%(ext)s")
+
+    opts: dict = {
+        "outtmpl": outtmpl,
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+    }
+
+    if mode == "audio":
+        opts["format"] = "bestaudio/best"
+        opts["postprocessors"] = [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "0",
+            }
+        ]
+    else:
+        opts["format"] = "bestvideo+bestaudio/best"
+        opts["merge_output_format"] = "mp4"
+
+    # Try plain, then with cookies
+    last_err: Exception | None = None
+    for attempt_opts in _ytdlp_attempt_opts(opts):
+        try:
+            with yt_dlp.YoutubeDL(attempt_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                title = _sanitize_filename((info or {}).get("title", "") or tmp_id)
+            break
+        except Exception as e:
+            last_err = e
+            # Clean partial
+            for f in save_path.glob(f"_tmp_{tmp_id}.*"):
+                f.unlink(missing_ok=True)
+            if not _AUTH_ERROR_RE.search(str(e)):
+                raise
+    else:
+        raise RuntimeError(f"下载失败: {last_err}")
+
+    # Rename temp files to title-based name
+    ext = "mp3" if mode == "audio" else "mp4"
+    for f in save_path.glob(f"_tmp_{tmp_id}.*"):
+        final_name = f"{title}.{f.suffix.lstrip('.')}"
+        final_path = save_path / final_name
+        # Avoid overwrite
+        counter = 1
+        while final_path.exists():
+            final_path = save_path / f"{title} ({counter}).{f.suffix.lstrip('.')}"
+            counter += 1
+        f.rename(final_path)
+        return {"filename": final_path.name, "path": str(final_path)}
+
+    raise FileNotFoundError("下载完成但未找到输出文件")
+
+
+def _ytdlp_attempt_opts(base_opts: dict):
+    """Generate option dicts: plain first, then with browser cookies."""
+    yield base_opts
+    for browser in _BROWSER_ORDER:
+        cookie_opts = dict(base_opts)
+        cookie_opts["cookiesfrombrowser"] = (browser,)
+        yield cookie_opts
+
+
+def _douyin_download_media(url: str, save_path: Path, mode: str) -> dict:
+    """Download Douyin video or audio to save_path."""
+    video_id = _douyin_resolve_video_id(url)
+    info = _douyin_fetch_video_info(video_id)
+    video_url = info["video_url"]
+    title = _sanitize_filename(info.get("title", "") or f"douyin_{video_id}")
+
+    headers = {
+        "User-Agent": _DOUYIN_MOBILE_UA,
+        "Referer": "https://www.douyin.com/",
+    }
+
+    # Download the video
+    mp4_path = save_path / f"{title}.mp4"
+    counter = 1
+    while mp4_path.exists():
+        mp4_path = save_path / f"{title} ({counter}).mp4"
+        counter += 1
+
+    with requests.get(video_url, headers=headers, stream=True, timeout=60) as r:
+        r.raise_for_status()
+        with open(mp4_path, "wb") as f:
+            for chunk in r.iter_content(chunk_size=1024 * 256):
+                f.write(chunk)
+
+    if mode == "audio":
+        # Extract audio to mp3
+        mp3_path = mp4_path.with_suffix(".mp3")
+        cmd = [
+            "ffmpeg", "-y", "-i", str(mp4_path),
+            "-vn", "-acodec", "libmp3lame", "-q:a", "0", str(mp3_path),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        mp4_path.unlink(missing_ok=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"ffmpeg 音频提取失败: {result.stderr.strip()}")
+        return {"filename": mp3_path.name, "path": str(mp3_path)}
+
+    return {"filename": mp4_path.name, "path": str(mp4_path)}
 
 
 # ── Shared helpers ──────────────────────────────────────────────────

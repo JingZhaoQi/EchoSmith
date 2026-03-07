@@ -27,11 +27,21 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 try:
     from asr_engine import ASREngine
     from task_store import TaskRecord, TaskStatus, task_store
-    from url_downloader import download_audio, extract_url_from_text, extract_video_title
+    from url_downloader import (
+        download_audio,
+        download_media,
+        extract_url_from_text,
+        extract_video_title,
+    )
 except ImportError:
     from .asr_engine import ASREngine
     from .task_store import TaskRecord, TaskStatus, task_store
-    from .url_downloader import download_audio, extract_url_from_text, extract_video_title
+    from .url_downloader import (
+        download_audio,
+        download_media,
+        extract_url_from_text,
+        extract_video_title,
+    )
 
 
 class TaskControl:
@@ -663,3 +673,33 @@ async def export_task(
         return PlainTextResponse(srt_body, media_type="application/x-subrip")
 
     raise HTTPException(status_code=400, detail="不支持的导出格式")
+
+
+@app.post("/api/download")
+async def download_media_endpoint(
+    request: Request,
+    _: None = Depends(verify_token),
+) -> JSONResponse:
+    """Download video or audio from URL to a specified directory."""
+    body = await request.json()
+    raw_url = body.get("url", "").strip()
+    mode = body.get("mode", "video")  # "video" or "audio"
+    save_dir = body.get("save_dir", "").strip()
+
+    if not raw_url:
+        raise HTTPException(status_code=400, detail="URL 不能为空")
+    if not save_dir:
+        raise HTTPException(status_code=400, detail="保存目录不能为空")
+    if mode not in ("video", "audio"):
+        raise HTTPException(status_code=400, detail="mode 必须是 video 或 audio")
+
+    url = extract_url_from_text(raw_url)
+
+    try:
+        result = await asyncio.get_running_loop().run_in_executor(
+            None,
+            lambda: download_media(url, save_dir, mode),
+        )
+        return JSONResponse(result)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
