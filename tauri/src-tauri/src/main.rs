@@ -36,8 +36,23 @@ fn get_backend_config(state: State<BackendState>) -> BackendConfig {
 }
 
 fn get_log_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    let log_dir = PathBuf::from(&home).join("Library").join("Logs").join("EchoSmith");
+    #[cfg(target_os = "macos")]
+    let log_dir = {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        PathBuf::from(&home).join("Library").join("Logs").join("EchoSmith")
+    };
+    #[cfg(target_os = "windows")]
+    let log_dir = {
+        let local_app_data = std::env::var("LOCALAPPDATA")
+            .or_else(|_| std::env::var("APPDATA"))
+            .unwrap_or_else(|_| std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\".to_string()));
+        PathBuf::from(&local_app_data).join("EchoSmith").join("Logs")
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let log_dir = {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        PathBuf::from(&home).join(".local").join("share").join("EchoSmith").join("logs")
+    };
     let _ = fs::create_dir_all(&log_dir);
     log_dir.join("backend.log")
 }
@@ -211,16 +226,32 @@ fn spawn_backend(app_handle: tauri::AppHandle) -> Result<BackendState, Box<dyn s
         command.env("ECHOSMITH_PORT", port.to_string());
         command.env("ECHOSMITH_TOKEN", &token);
 
-        // Redirect stdout/stderr to log file
+        // Redirect stdout/stderr to log file, or suppress output
         if let Some(ref stdout_file) = backend_stdout {
-            command.stdout(Stdio::from(stdout_file.try_clone().unwrap_or_else(|_| {
-                OpenOptions::new().write(true).open("/dev/null").unwrap()
-            })));
+            if let Ok(f) = stdout_file.try_clone() {
+                command.stdout(Stdio::from(f));
+            } else {
+                command.stdout(Stdio::null());
+            }
+        } else {
+            command.stdout(Stdio::null());
         }
         if let Some(ref stderr_file) = backend_stderr {
-            command.stderr(Stdio::from(stderr_file.try_clone().unwrap_or_else(|_| {
-                OpenOptions::new().write(true).open("/dev/null").unwrap()
-            })));
+            if let Ok(f) = stderr_file.try_clone() {
+                command.stderr(Stdio::from(f));
+            } else {
+                command.stderr(Stdio::null());
+            }
+        } else {
+            command.stderr(Stdio::null());
+        }
+
+        // On Windows, prevent the backend from opening a console window
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            command.creation_flags(CREATE_NO_WINDOW);
         }
 
         match command.spawn() {

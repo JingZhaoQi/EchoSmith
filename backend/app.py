@@ -421,6 +421,9 @@ async def _run_task(task_id: str, source_info: dict, cleanup_paths: list[str]) -
 
         await task_store.update_task(task_id, message="转写中", progress=0.05 if source_info.get("type") != "url" else 0.30)
 
+        # Apply language setting from task
+        await engine.set_language(source_info.get("language", "zh"))
+
         # For URL tasks, map transcription progress from 0.3 to 1.0
         if source_info.get("type") == "url":
             def url_progress_cb(progress: float, stage: str, partial: str) -> None:

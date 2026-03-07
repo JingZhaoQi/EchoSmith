@@ -78,12 +78,15 @@ class ASREngine:
         except Exception:
             return os.cpu_count() or 4
 
+    SUPPORTED_LANGUAGES = {"zh", "en"}
+
     def __init__(
         self,
         model_dir: str = DEFAULT_MODEL_DIR,
         download_callback: ModelDownloadCallback | None = None,
         num_threads: int = 0,
         use_int8: bool = True,
+        language: str = "zh",
     ) -> None:
         self._recognizer: sherpa_onnx.OfflineRecognizer | None = None
         self._vad_config: sherpa_onnx.VadModelConfig | None = None
@@ -95,6 +98,7 @@ class ASREngine:
         self._download_message = ""
         self._num_threads = num_threads or self._default_num_threads()
         self._use_int8 = use_int8
+        self._language = language if language in self.SUPPORTED_LANGUAGES else "zh"
 
     def get_model_cache_dir(self) -> str:
         """Get the directory where models will be cached."""
@@ -116,6 +120,17 @@ class ASREngine:
     def has_model(self) -> bool:
         """Return whether the model has been loaded."""
         return self._recognizer is not None
+
+    async def set_language(self, language: str) -> None:
+        """Switch recognition language, reloading model if needed."""
+        lang = language if language in self.SUPPORTED_LANGUAGES else "zh"
+        if lang == self._language:
+            return
+        async with self._model_lock:
+            self._language = lang
+            if self._recognizer is not None:
+                self._recognizer = None
+                self._load_model_sync()
 
     def _report_download_progress(
         self, stage: str, progress: float, message: str
@@ -177,7 +192,7 @@ class ASREngine:
             model=model_path,
             tokens=tokens_path,
             num_threads=self._num_threads,
-            language="auto",
+            language=self._language,
             use_itn=True,
             provider="cpu",
         )
