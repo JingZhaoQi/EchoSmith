@@ -96,8 +96,8 @@ function AppShell(): JSX.Element {
   })();
 
   return (
-    <AuroraBackground className="min-h-screen">
-      <div className="min-h-screen flex flex-col backdrop-blur-[2px]">
+    <AuroraBackground className="h-screen">
+      <div className="h-screen flex flex-col backdrop-blur-[2px] overflow-hidden">
         {/* macOS-style Header */}
         <header className="border-b border-black/[0.08] dark:border-white/[0.08] backdrop-blur-2xl backdrop-saturate-150 bg-white/80 dark:bg-zinc-900/80 px-8 py-4 flex items-center justify-between sticky top-0 z-50 shadow-[0_1px_0_rgba(0,0,0,0.05)] dark:shadow-[0_1px_0_rgba(255,255,255,0.05)]">
           <div className="flex items-center gap-4">
@@ -142,8 +142,8 @@ function AppShell(): JSX.Element {
         </header>
 
         {/* Enhanced Main Content */}
-        <main className="flex-1 grid lg:grid-cols-[440px_1fr] gap-8 p-8">
-          <section className="space-y-4 animate-slide-in-left">
+        <main className="flex-1 grid lg:grid-cols-[440px_1fr] grid-rows-[1fr] gap-8 p-8 pb-4 min-h-0">
+          <section className="flex flex-col gap-4 animate-slide-in-left min-h-0">
             {/* Tab switcher with pill indicator */}
             <div className="relative flex rounded-xl bg-black/[0.04] dark:bg-white/[0.06] p-1">
               {/* Sliding pill background */}
@@ -171,9 +171,11 @@ function AppShell(): JSX.Element {
                 </button>
               ))}
             </div>
-            {leftTab === "batch" ? <BatchTaskComposer /> : <UrlTaskComposer />}
+            <div className="flex-1 min-h-0">
+              {leftTab === "batch" ? <BatchTaskComposer /> : <UrlTaskComposer />}
+            </div>
           </section>
-          <section className="space-y-6 animate-slide-in-right">
+          <section className="flex flex-col gap-6 animate-slide-in-right min-h-0">
             <TaskStreamPanel />
             <ResultPanel />
           </section>

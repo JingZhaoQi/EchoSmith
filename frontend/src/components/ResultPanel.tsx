@@ -282,8 +282,8 @@ export function ResultPanel(): JSX.Element {
   }, [task?.id, task?.status, isPaused, canExport, saving]);
 
   return (
-    <Card>
-      <div className="flex items-center justify-between mb-3">
+    <Card className="flex-1 !flex !flex-col !space-y-0 gap-3 min-h-0">
+      <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold">转写结果</h2>
         <span className="text-xs text-muted-foreground">
           {task
@@ -293,7 +293,7 @@ export function ResultPanel(): JSX.Element {
       </div>
       <div
         ref={resultRef}
-        className="h-60 rounded-lg border border-border bg-muted/40 p-4 text-sm overflow-y-auto whitespace-pre-wrap"
+        className="flex-1 min-h-[120px] rounded-lg border border-border bg-muted/40 p-4 text-sm overflow-y-auto whitespace-pre-wrap"
       >
         {task?.result_text ? task.result_text : (
           <div className="h-full flex flex-col items-center justify-center gap-2 text-muted-foreground">
@@ -302,7 +302,7 @@ export function ResultPanel(): JSX.Element {
           </div>
         )}
       </div>
-      <div className="flex items-center gap-2 mt-4">
+      <div className="flex items-center gap-2">
         <Button
           variant="secondary"
           size="sm"

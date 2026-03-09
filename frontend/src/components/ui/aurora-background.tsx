@@ -12,7 +12,7 @@ export const AuroraBackground: React.FC<AuroraBackgroundProps> = ({
   className = "",
 }) => {
   return (
-    <div className={`relative min-h-screen overflow-hidden ${className}`}>
+    <div className={`relative overflow-hidden ${className}`}>
       {/* macOS-style clean background */}
       <div className="absolute inset-0 bg-gradient-to-br from-gray-50 via-white to-gray-100/50 dark:from-zinc-900 dark:via-black dark:to-zinc-950" />
 
@@ -42,7 +42,7 @@ export const AuroraBackground: React.FC<AuroraBackgroundProps> = ({
       </div>
 
       {/* Content */}
-      <div className="relative z-10">{children}</div>
+      <div className="relative z-10 h-full">{children}</div>
 
       <style>{`
         @keyframes aurora {
