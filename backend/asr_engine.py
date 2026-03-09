@@ -76,7 +76,7 @@ class TranscriptionResult:
 class SpeechRegion:
     """Copied speech data from VAD (safe after vad.pop())."""
     start_sample: int
-    samples: list[float]
+    samples: np.ndarray  # float32 numpy array (NOT Python list)
 
 
 ProgressCallback = Callable[[float, str, str], None]
@@ -311,13 +311,15 @@ class ASREngine:
         total = len(samples)
         last_pct = -1
 
+        # Feed audio to VAD in window-sized chunks.
+        # Progress reporting every 5% to avoid callback overhead in hot loop.
         for i in range(0, total, window):
             chunk = samples[i : i + window]
             if len(chunk) < window:
                 break
             vad.accept_waveform(chunk)
             if progress_cb:
-                pct = i * 100 // total
+                pct = i * 20 // total  # 0..20 (5% granularity)
                 if pct > last_pct:
                     last_pct = pct
                     progress_cb(0.12 + 0.03 * (i / total), "语音检测中", "")
@@ -328,7 +330,7 @@ class ASREngine:
             seg = vad.front
             regions.append(SpeechRegion(
                 start_sample=int(seg.start),
-                samples=list(seg.samples),
+                samples=np.array(seg.samples, dtype=np.float32),
             ))
             vad.pop()
         return regions
@@ -372,9 +374,10 @@ class ASREngine:
                 wav_path.unlink(missing_ok=True)
 
     # Batch size for decode_streams().  Larger batches amortise the ORT
-    # session overhead but consume more memory.  8 is a good default for
-    # the SenseVoice INT8 model on machines with >=8 GB RAM.
-    _BATCH_SIZE = 8
+    # session overhead but consume more memory.  16 works well for the
+    # SenseVoice INT8 model; each segment is ~30s * 16kHz * 4B ≈ 1.9MB,
+    # so 16 segments ≈ 30MB peak — trivial on any modern machine.
+    _BATCH_SIZE = 16
 
     def _transcribe_with_vad(
         self,
@@ -475,44 +478,54 @@ class ASREngine:
         pause_event: asyncio.Event | None,
         cancelled_checker: Callable[[], bool] | None,
     ) -> TranscriptionResult:
-        """Fallback: fixed 30-second chunking when VAD is unavailable."""
+        """Fallback: fixed 30-second chunking when VAD is unavailable.
+
+        Uses batch decode_streams() for parallelism, same as the VAD path.
+        """
         assert self._recognizer is not None
 
         chunk_size = sample_rate * 30
         total_samples = len(samples)
         all_texts: list[str] = []
         all_segments: list[Segment] = []
-        current_offset_ms = 0
         num_chunks = max(1, (total_samples + chunk_size - 1) // chunk_size)
+        batch_size = self._BATCH_SIZE
 
-        for chunk_idx in range(num_chunks):
+        for batch_start in range(0, num_chunks, batch_size):
             if self._check_interrupted(pause_event, cancelled_checker):
                 break
 
-            start_idx = chunk_idx * chunk_size
-            end_idx = min(start_idx + chunk_size, total_samples)
-            chunk_samples = samples[start_idx:end_idx]
-            chunk_duration_ms = int((end_idx - start_idx) / sample_rate * 1000)
-
-            progress = 0.1 + 0.8 * (chunk_idx / num_chunks)
+            batch_end = min(batch_start + batch_size, num_chunks)
+            progress = 0.1 + 0.8 * (batch_start / num_chunks)
             if progress_cb:
-                progress_cb(progress, f"转写中 {chunk_idx + 1}/{num_chunks}", " ".join(all_texts))
+                progress_cb(progress, f"转写中 {batch_start + 1}-{batch_end}/{num_chunks}", " ".join(all_texts))
 
-            stream = self._recognizer.create_stream()
-            stream.accept_waveform(sample_rate, chunk_samples)
-            self._recognizer.decode_stream(stream)
+            streams = []
+            chunk_metas = []  # (offset_ms, duration_ms)
+            for chunk_idx in range(batch_start, batch_end):
+                start_idx = chunk_idx * chunk_size
+                end_idx = min(start_idx + chunk_size, total_samples)
+                chunk_samples = samples[start_idx:end_idx]
+                chunk_duration_ms = int((end_idx - start_idx) / sample_rate * 1000)
+                offset_ms = int(start_idx / sample_rate * 1000)
 
-            chunk_text = stream.result.text.strip()
-            if chunk_text:
-                all_texts.append(chunk_text)
-                chunk_segs = self._create_segments(chunk_text, chunk_duration_ms)
-                for s in chunk_segs:
-                    s.index = len(all_segments)
-                    s.start_ms += current_offset_ms
-                    s.end_ms += current_offset_ms
-                    all_segments.append(s)
+                s = self._recognizer.create_stream()
+                s.accept_waveform(sample_rate, chunk_samples)
+                streams.append(s)
+                chunk_metas.append((offset_ms, chunk_duration_ms))
 
-            current_offset_ms += chunk_duration_ms
+            self._recognizer.decode_streams(streams)
+
+            for stream, (offset_ms, chunk_duration_ms) in zip(streams, chunk_metas):
+                chunk_text = stream.result.text.strip()
+                if chunk_text:
+                    all_texts.append(chunk_text)
+                    chunk_segs = self._create_segments(chunk_text, chunk_duration_ms)
+                    for seg in chunk_segs:
+                        seg.index = len(all_segments)
+                        seg.start_ms += offset_ms
+                        seg.end_ms += offset_ms
+                        all_segments.append(seg)
 
         final_text = " ".join(all_texts).strip()
         if progress_cb:
@@ -557,14 +570,13 @@ class ASREngine:
         return tmp_path
 
     def _read_wav(self, wav_path: Path) -> tuple[np.ndarray, int]:
-        """Read WAV file and return float32 numpy array."""
+        """Read WAV file and return contiguous float32 numpy array."""
         with wave.open(str(wav_path), "rb") as wf:
             sample_rate = wf.getframerate()
             raw_data = wf.readframes(wf.getnframes())
-        return (
-            np.frombuffer(raw_data, dtype=np.int16).astype(np.float32) / 32768.0,
-            sample_rate,
-        )
+        # ascontiguousarray ensures optimal memory layout for ONNX Runtime
+        samples = np.frombuffer(raw_data, dtype=np.int16).astype(np.float32) / 32768.0
+        return np.ascontiguousarray(samples), sample_rate
 
     def _create_segments(self, text: str, duration_ms: int) -> list[Segment]:
         """Split text into segments with estimated timestamps."""
