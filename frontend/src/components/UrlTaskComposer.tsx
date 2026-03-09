@@ -115,7 +115,7 @@ export function UrlTaskComposer(): JSX.Element {
       </div>
 
       {/* URL input */}
-      <div className="flex-1 flex flex-col gap-4">
+      <div className="flex flex-col gap-4">
         <div>
           <label className="text-sm font-medium text-gray-900 dark:text-white mb-2 block">
             视频链接
@@ -179,7 +179,7 @@ export function UrlTaskComposer(): JSX.Element {
       </div>
 
       {/* Transcribe button */}
-      <div className="flex flex-col gap-2 pt-2">
+      <div className="flex flex-col gap-2 mt-4">
         <Button
           type="submit"
           variant="default"

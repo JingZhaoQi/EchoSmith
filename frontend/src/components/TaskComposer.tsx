@@ -96,7 +96,7 @@ export function TaskComposer(): JSX.Element {
         <h2 className="text-base font-semibold">新建任务</h2>
         <p className="text-xs text-muted-foreground mt-1">选择音视频文件进行转写</p>
       </div>
-      <div className="space-y-4 flex-1">
+      <div className="space-y-4">
         <div
           className="flex flex-col items-center justify-center rounded-[16px] border-2 border-dashed border-black/10 dark:border-white/10 bg-black/[0.02] dark:bg-white/[0.02] hover:bg-black/[0.04] dark:hover:bg-white/[0.04] hover:border-black/20 dark:hover:border-white/20 transition-all duration-200 px-5 py-10 text-center cursor-pointer group"
           onClick={() => fileInputRef.current?.click()}
@@ -123,7 +123,7 @@ export function TaskComposer(): JSX.Element {
           />
         </div>
       </div>
-      <div className="flex items-center gap-3 pt-2">
+      <div className="flex items-center gap-3 mt-4">
         <Button
           type="submit"
           variant="default"

@@ -402,7 +402,7 @@ export function BatchTaskComposer(): JSX.Element {
       </div>
 
       {/* File upload area */}
-      <div className="space-y-3 flex-1">
+      <div className="space-y-3">
         <div
           className={`flex flex-col items-center justify-center rounded-[16px] border-2 border-dashed transition-all duration-200 px-5 py-8 text-center cursor-pointer group ${
             isDragging
@@ -477,7 +477,7 @@ export function BatchTaskComposer(): JSX.Element {
       </div>
 
       {/* Start button */}
-      <div className="flex items-center gap-3 pt-2">
+      <div className="flex items-center gap-3 mt-4">
         <Button
           type={allDone ? "button" : "submit"}
           variant="default"
