@@ -82,7 +82,7 @@ cd tauri && pnpm install && cd ..
 python scripts/download_models.py
 
 # 启动开发模式
-./start_dev.sh
+cd tauri && pnpm tauri dev
 ```
 
 #### 构建安装包
@@ -131,50 +131,6 @@ cd tauri && npm run build
 | 语音分段 | Silero VAD |
 | 音视频处理 | FFmpeg（内置） |
 | URL 下载 | yt-dlp |
-
-## 项目结构
-
-```
-EchoSmith/
-├── backend/                # FastAPI 后端
-│   ├── __main__.py         # 入口
-│   ├── app.py              # API 路由 + WebSocket
-│   ├── asr_engine.py       # sherpa-onnx + VAD 引擎
-│   ├── task_store.py       # 任务状态管理
-│   └── url_downloader.py   # URL 下载（yt-dlp）
-├── frontend/               # React 前端
-│   └── src/
-│       ├── app/            # 主应用 + Tab 切换
-│       ├── components/     # UI 组件
-│       ├── hooks/          # React Hooks
-│       └── lib/            # API 客户端 + 工具
-├── tauri/src-tauri/        # Tauri 桌面壳
-│   ├── src/main.rs         # 后端生命周期管理
-│   └── icons/              # 应用图标 + NSIS 安装图
-└── scripts/                # 构建 + 模型下载脚本
-```
-
-## API
-
-### REST
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/api/health` | 健康检查 |
-| POST | `/api/tasks` | 创建转写任务（文件上传） |
-| POST | `/api/tasks/from-path` | 从本地路径创建任务 |
-| POST | `/api/tasks/from-url` | 从 URL 下载并创建任务 |
-| GET | `/api/tasks` | 获取任务列表 |
-| GET | `/api/tasks/{id}` | 获取任务详情 |
-| POST | `/api/tasks/{id}/pause` | 暂停任务 |
-| POST | `/api/tasks/{id}/resume` | 恢复任务 |
-| POST | `/api/tasks/{id}/cancel` | 取消任务 |
-| GET | `/api/tasks/{id}/export` | 导出结果 |
-| POST | `/api/tasks/{id}/auto-export` | 自动导出到源文件目录 |
-
-### WebSocket
-
-`ws://localhost:{port}/ws/tasks/{id}` — 实时接收任务进度和转录结果
 
 ## 许可证
 

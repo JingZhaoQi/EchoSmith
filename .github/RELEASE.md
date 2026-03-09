@@ -46,13 +46,14 @@
 
 ### macOS
 ```bash
-./scripts/package_all.sh
-# 构建产物在: tauri/src-tauri/target/release/bundle/dmg/
+bash scripts/build_local_dmg.sh
+# 构建产物: ./EchoSmith.dmg
 ```
 
 ### Windows
 ```powershell
-.\scripts\package_all.ps1
+.\scripts\build_backend.ps1
+cd tauri && npm run build
 # 构建产物在: tauri\src-tauri\target\release\bundle\
 ```
 
