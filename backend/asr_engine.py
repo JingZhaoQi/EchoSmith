@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import platform
 import re
 import subprocess
 import wave
@@ -13,6 +14,29 @@ from typing import Callable
 
 import numpy as np
 import sherpa_onnx
+
+
+def _subprocess_kwargs() -> dict:
+    """Return extra kwargs for subprocess.run() to work reliably on Windows.
+
+    On Windows GUI apps (e.g. launched via Tauri with CREATE_NO_WINDOW),
+    child processes need:
+      - CREATE_NO_WINDOW to avoid console window flash / allocation failure
+      - stdin=DEVNULL because ffmpeg reads stdin by default and a missing
+        console makes stdin unavailable, causing hangs
+      - explicit encoding='utf-8' with errors='replace' because the default
+        text=True uses the system code page (cp936 on Chinese Windows) which
+        can choke on ffmpeg's UTF-8 output
+    """
+    kwargs: dict = {
+        "stdin": subprocess.DEVNULL,
+        "capture_output": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+    }
+    if platform.system() == "Windows":
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW  # 0x08000000
+    return kwargs
 
 MODEL_CARD = "SenseVoice INT8 (sherpa-onnx)"
 
@@ -68,7 +92,14 @@ class ASREngine:
 
     @staticmethod
     def _default_num_threads() -> int:
-        """Use performance core count on Apple Silicon, otherwise all cores."""
+        """Pick optimal thread count per platform.
+
+        - macOS Apple Silicon: use performance-core count via sysctl.
+        - Windows / Linux: use *physical* core count (or half of logical
+          cores) capped to a single NUMA node.  For ONNX Runtime inference,
+          using more threads than physical cores hurts because hyper-threads
+          compete for execution units and cross-CCD/NUMA traffic stalls.
+        """
         try:
             import subprocess as _sp
             out = _sp.check_output(
@@ -76,7 +107,14 @@ class ASREngine:
             ).strip()
             return int(out)
         except Exception:
-            return os.cpu_count() or 4
+            pass
+
+        logical = os.cpu_count() or 4
+        # Approximate physical core count (logical / 2 for SMT/HT).
+        physical = max(1, logical // 2)
+        # Cap at 8: beyond that, memory-bandwidth becomes the bottleneck
+        # for ONNX int8 inference and more threads just add overhead.
+        return min(physical, 8)
 
     SUPPORTED_LANGUAGES = {"zh", "en"}
 
@@ -324,6 +362,11 @@ class ASREngine:
             if wav_path != audio_path and wav_path.exists():
                 wav_path.unlink(missing_ok=True)
 
+    # Batch size for decode_streams().  Larger batches amortise the ORT
+    # session overhead but consume more memory.  8 is a good default for
+    # the SenseVoice INT8 model on machines with >=8 GB RAM.
+    _BATCH_SIZE = 8
+
     def _transcribe_with_vad(
         self,
         samples: np.ndarray,
@@ -333,7 +376,12 @@ class ASREngine:
         pause_event: asyncio.Event | None,
         cancelled_checker: Callable[[], bool] | None,
     ) -> TranscriptionResult:
-        """VAD-guided transcription: split on silence, not on fixed intervals."""
+        """VAD-guided transcription: split on silence, not on fixed intervals.
+
+        Speech segments are decoded in batches via ``decode_streams()``
+        so that ONNX Runtime can parallelise the work across threads,
+        yielding a significant speed-up compared to one-by-one decoding.
+        """
         assert self._recognizer is not None
 
         if progress_cb:
@@ -349,46 +397,58 @@ class ASREngine:
         all_texts: list[str] = []
         all_segments: list[Segment] = []
         total = len(speech_segments)
+        batch_size = self._BATCH_SIZE
 
-        for idx, seg in enumerate(speech_segments):
+        for batch_start in range(0, total, batch_size):
             if self._check_interrupted(pause_event, cancelled_checker):
                 break
 
-            progress = 0.15 + 0.80 * (idx / total)
+            batch_end = min(batch_start + batch_size, total)
+            batch = speech_segments[batch_start:batch_end]
+
+            progress = 0.15 + 0.80 * (batch_start / total)
             if progress_cb:
-                progress_cb(progress, f"转写中 {idx + 1}/{total}", " ".join(all_texts))
+                progress_cb(progress, f"转写中 {batch_start + 1}-{batch_end}/{total}", " ".join(all_texts))
 
-            stream = self._recognizer.create_stream()
-            stream.accept_waveform(sample_rate, seg.samples)
-            self._recognizer.decode_stream(stream)
+            # Build streams for the whole batch
+            streams = []
+            for seg in batch:
+                s = self._recognizer.create_stream()
+                s.accept_waveform(sample_rate, seg.samples)
+                streams.append(s)
 
-            text = stream.result.text.strip()
-            if not text:
-                continue
+            # Batch decode — ORT parallelises across threads internally
+            self._recognizer.decode_streams(streams)
 
-            all_texts.append(text)
+            # Collect results
+            for seg, stream in zip(batch, streams):
+                text = stream.result.text.strip()
+                if not text:
+                    continue
 
-            start_ms = int(seg.start_sample / sample_rate * 1000)
-            end_ms = start_ms + int(len(seg.samples) / sample_rate * 1000)
+                all_texts.append(text)
 
-            # Split into sentence-level segments within this VAD region
-            sentences = _split_sentences(text) or [text]
-            seg_duration_ms = end_ms - start_ms
-            total_chars = sum(len(s) for s in sentences)
-            cursor_ms = start_ms
+                start_ms = int(seg.start_sample / sample_rate * 1000)
+                end_ms = start_ms + int(len(seg.samples) / sample_rate * 1000)
 
-            for s_idx, sentence in enumerate(sentences):
-                proportion = len(sentence) / total_chars if total_chars > 0 else 1.0
-                s_end = cursor_ms + int(seg_duration_ms * proportion)
-                if s_idx == len(sentences) - 1:
-                    s_end = end_ms
-                all_segments.append(Segment(
-                    index=len(all_segments),
-                    start_ms=cursor_ms,
-                    end_ms=s_end,
-                    text=sentence,
-                ))
-                cursor_ms = s_end
+                # Split into sentence-level segments within this VAD region
+                sentences = _split_sentences(text) or [text]
+                seg_duration_ms = end_ms - start_ms
+                total_chars = sum(len(s) for s in sentences)
+                cursor_ms = start_ms
+
+                for s_idx, sentence in enumerate(sentences):
+                    proportion = len(sentence) / total_chars if total_chars > 0 else 1.0
+                    s_end = cursor_ms + int(seg_duration_ms * proportion)
+                    if s_idx == len(sentences) - 1:
+                        s_end = end_ms
+                    all_segments.append(Segment(
+                        index=len(all_segments),
+                        start_ms=cursor_ms,
+                        end_ms=s_end,
+                        text=sentence,
+                    ))
+                    cursor_ms = s_end
 
         final_text = " ".join(all_texts).strip()
 
@@ -472,6 +532,7 @@ class ASREngine:
         cmd = [
             "ffmpeg",
             "-y",
+            "-nostdin",
             "-i",
             str(audio_path),
             "-ac",
@@ -480,7 +541,7 @@ class ASREngine:
             "16000",
             str(tmp_path),
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, **_subprocess_kwargs())
         if result.returncode != 0:
             raise RuntimeError(f"ffmpeg 转换失败: {result.stderr.strip()}")
 
@@ -545,7 +606,7 @@ def probe_duration_ms(audio_path: Path) -> int:
         "default=noprint_wrappers=1:nokey=1",
         str(audio_path),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, **_subprocess_kwargs())
     if result.returncode != 0:
         raise RuntimeError(f"ffprobe 调用失败: {result.stderr.strip()}")
     try:

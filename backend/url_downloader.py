@@ -15,6 +15,22 @@ from typing import Callable, Optional
 import requests
 import yt_dlp
 
+
+def _subprocess_kwargs() -> dict:
+    """Return extra kwargs for subprocess.run() on Windows GUI apps.
+
+    Prevents console-window flash, stdin hangs, and encoding errors.
+    """
+    kwargs: dict = {
+        "stdin": subprocess.DEVNULL,
+        "capture_output": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+    }
+    if platform.system() == "Windows":
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    return kwargs
+
 log = logging.getLogger(__name__)
 
 DOWNLOAD_DIR = Path(tempfile.gettempdir()) / "echosmith_uploads"
@@ -285,10 +301,10 @@ def _douyin_download(
     # Convert to WAV using ffmpeg
     wav_path = DOWNLOAD_DIR / f"{task_id}.wav"
     cmd = [
-        "ffmpeg", "-y", "-i", str(mp4_path),
+        "ffmpeg", "-y", "-nostdin", "-i", str(mp4_path),
         "-ac", "1", "-ar", "16000", str(wav_path),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, **_subprocess_kwargs())
     mp4_path.unlink(missing_ok=True)
 
     if result.returncode != 0:
@@ -453,10 +469,10 @@ def _douyin_download_media(
         # Extract audio to mp3
         mp3_path = mp4_path.with_suffix(".mp3")
         cmd = [
-            "ffmpeg", "-y", "-i", str(mp4_path),
+            "ffmpeg", "-y", "-nostdin", "-i", str(mp4_path),
             "-vn", "-acodec", "libmp3lame", "-q:a", "0", str(mp3_path),
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, **_subprocess_kwargs())
         mp4_path.unlink(missing_ok=True)
         if result.returncode != 0:
             raise RuntimeError(f"ffmpeg 音频提取失败: {result.stderr.strip()}")

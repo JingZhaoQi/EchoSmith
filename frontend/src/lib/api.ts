@@ -351,7 +351,7 @@ export async function autoExportTask(
 
   try {
     const { writeFile } = await import("@tauri-apps/plugin-fs");
-    const { dirname, extname, basename } = await import("@tauri-apps/api/path");
+    const { dirname, extname, basename, join } = await import("@tauri-apps/api/path");
     console.log("[autoExportTask] Tauri plugins imported successfully");
 
     // Get source file directory and base name
@@ -373,7 +373,7 @@ export async function autoExportTask(
         // Clean up base name (remove trailing dots if any)
         const cleanBase = sourceBase.replace(/\.+$/, '');
 
-        const outputPath = `${sourceDir}/${cleanBase}.${cleanFormat}`;
+        const outputPath = await join(sourceDir, `${cleanBase}.${cleanFormat}`);
         console.log(`[autoExportTask] Writing to ${outputPath}`, {
           sourceDir,
           cleanBase,

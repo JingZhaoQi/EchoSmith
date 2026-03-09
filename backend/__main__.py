@@ -33,18 +33,22 @@ if getattr(sys, "frozen", False):
     if bundled_ffmpeg.exists():
         # Use bundled ffmpeg first
         os.environ["PATH"] = str(bundled_ffmpeg) + os.pathsep + current_path
-        # Let dyld find bundled dylibs when ffmpeg/ffprobe run as subprocesses
-        os.environ["DYLD_LIBRARY_PATH"] = str(bundled_ffmpeg)
-        os.environ["DYLD_FALLBACK_LIBRARY_PATH"] = str(bundled_ffmpeg)
+        # Let dyld find bundled dylibs when ffmpeg/ffprobe run as subprocesses (macOS only)
+        if sys.platform == "darwin":
+            os.environ["DYLD_LIBRARY_PATH"] = str(bundled_ffmpeg)
+            os.environ["DYLD_FALLBACK_LIBRARY_PATH"] = str(bundled_ffmpeg)
         print(f"[INIT] Using bundled ffmpeg from: {bundled_ffmpeg}")
     else:
-        # Fall back to system PATH with common locations
-        additional_paths = [
-            "/opt/homebrew/bin",  # Homebrew on Apple Silicon
-            "/usr/local/bin",  # Homebrew on Intel Macs
-            "/usr/bin",
-            "/bin",
-        ]
+        # Fall back to system PATH with common locations (platform-aware)
+        if sys.platform == "win32":
+            additional_paths: list[str] = []  # Windows relies on system PATH / installer
+        else:
+            additional_paths = [
+                "/opt/homebrew/bin",  # Homebrew on Apple Silicon
+                "/usr/local/bin",  # Homebrew on Intel Macs
+                "/usr/bin",
+                "/bin",
+            ]
         sep = os.pathsep
         new_paths = [p for p in additional_paths if p not in current_path.split(sep)]
         if new_paths:
