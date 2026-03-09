@@ -373,12 +373,6 @@ class ASREngine:
             if wav_path != audio_path and wav_path.exists():
                 wav_path.unlink(missing_ok=True)
 
-    # Batch size for decode_streams().  Larger batches amortise the ORT
-    # session overhead but consume more memory.  16 works well for the
-    # SenseVoice INT8 model; each segment is ~30s * 16kHz * 4B ≈ 1.9MB,
-    # so 16 segments ≈ 30MB peak — trivial on any modern machine.
-    _BATCH_SIZE = 16
-
     def _transcribe_with_vad(
         self,
         samples: np.ndarray,
@@ -388,12 +382,7 @@ class ASREngine:
         pause_event: asyncio.Event | None,
         cancelled_checker: Callable[[], bool] | None,
     ) -> TranscriptionResult:
-        """VAD-guided transcription: split on silence, not on fixed intervals.
-
-        Speech segments are decoded in batches via ``decode_streams()``
-        so that ONNX Runtime can parallelise the work across threads,
-        yielding a significant speed-up compared to one-by-one decoding.
-        """
+        """VAD-guided transcription: split on silence, not on fixed intervals."""
         assert self._recognizer is not None
 
         if progress_cb:
@@ -409,58 +398,46 @@ class ASREngine:
         all_texts: list[str] = []
         all_segments: list[Segment] = []
         total = len(speech_segments)
-        batch_size = self._BATCH_SIZE
 
-        for batch_start in range(0, total, batch_size):
+        for idx, seg in enumerate(speech_segments):
             if self._check_interrupted(pause_event, cancelled_checker):
                 break
 
-            batch_end = min(batch_start + batch_size, total)
-            batch = speech_segments[batch_start:batch_end]
-
-            progress = 0.15 + 0.80 * (batch_start / total)
+            progress = 0.15 + 0.80 * (idx / total)
             if progress_cb:
-                progress_cb(progress, f"转写中 {batch_start + 1}-{batch_end}/{total}", " ".join(all_texts))
+                progress_cb(progress, f"转写中 {idx + 1}/{total}", " ".join(all_texts))
 
-            # Build streams for the whole batch
-            streams = []
-            for seg in batch:
-                s = self._recognizer.create_stream()
-                s.accept_waveform(sample_rate, seg.samples)
-                streams.append(s)
+            stream = self._recognizer.create_stream()
+            stream.accept_waveform(sample_rate, seg.samples)
+            self._recognizer.decode_stream(stream)
 
-            # Batch decode — ORT parallelises across threads internally
-            self._recognizer.decode_streams(streams)
+            text = stream.result.text.strip()
+            if not text:
+                continue
 
-            # Collect results
-            for seg, stream in zip(batch, streams):
-                text = stream.result.text.strip()
-                if not text:
-                    continue
+            all_texts.append(text)
 
-                all_texts.append(text)
+            start_ms = int(seg.start_sample / sample_rate * 1000)
+            end_ms = start_ms + int(len(seg.samples) / sample_rate * 1000)
 
-                start_ms = int(seg.start_sample / sample_rate * 1000)
-                end_ms = start_ms + int(len(seg.samples) / sample_rate * 1000)
+            # Split into sentence-level segments within this VAD region
+            sentences = _split_sentences(text) or [text]
+            seg_duration_ms = end_ms - start_ms
+            total_chars = sum(len(s) for s in sentences)
+            cursor_ms = start_ms
 
-                # Split into sentence-level segments within this VAD region
-                sentences = _split_sentences(text) or [text]
-                seg_duration_ms = end_ms - start_ms
-                total_chars = sum(len(s) for s in sentences)
-                cursor_ms = start_ms
-
-                for s_idx, sentence in enumerate(sentences):
-                    proportion = len(sentence) / total_chars if total_chars > 0 else 1.0
-                    s_end = cursor_ms + int(seg_duration_ms * proportion)
-                    if s_idx == len(sentences) - 1:
-                        s_end = end_ms
-                    all_segments.append(Segment(
-                        index=len(all_segments),
-                        start_ms=cursor_ms,
-                        end_ms=s_end,
-                        text=sentence,
-                    ))
-                    cursor_ms = s_end
+            for s_idx, sentence in enumerate(sentences):
+                proportion = len(sentence) / total_chars if total_chars > 0 else 1.0
+                s_end = cursor_ms + int(seg_duration_ms * proportion)
+                if s_idx == len(sentences) - 1:
+                    s_end = end_ms
+                all_segments.append(Segment(
+                    index=len(all_segments),
+                    start_ms=cursor_ms,
+                    end_ms=s_end,
+                    text=sentence,
+                ))
+                cursor_ms = s_end
 
         final_text = " ".join(all_texts).strip()
 
@@ -478,54 +455,44 @@ class ASREngine:
         pause_event: asyncio.Event | None,
         cancelled_checker: Callable[[], bool] | None,
     ) -> TranscriptionResult:
-        """Fallback: fixed 30-second chunking when VAD is unavailable.
-
-        Uses batch decode_streams() for parallelism, same as the VAD path.
-        """
+        """Fallback: fixed 30-second chunking when VAD is unavailable."""
         assert self._recognizer is not None
 
         chunk_size = sample_rate * 30
         total_samples = len(samples)
         all_texts: list[str] = []
         all_segments: list[Segment] = []
+        current_offset_ms = 0
         num_chunks = max(1, (total_samples + chunk_size - 1) // chunk_size)
-        batch_size = self._BATCH_SIZE
 
-        for batch_start in range(0, num_chunks, batch_size):
+        for chunk_idx in range(num_chunks):
             if self._check_interrupted(pause_event, cancelled_checker):
                 break
 
-            batch_end = min(batch_start + batch_size, num_chunks)
-            progress = 0.1 + 0.8 * (batch_start / num_chunks)
+            start_idx = chunk_idx * chunk_size
+            end_idx = min(start_idx + chunk_size, total_samples)
+            chunk_samples = samples[start_idx:end_idx]
+            chunk_duration_ms = int((end_idx - start_idx) / sample_rate * 1000)
+
+            progress = 0.1 + 0.8 * (chunk_idx / num_chunks)
             if progress_cb:
-                progress_cb(progress, f"转写中 {batch_start + 1}-{batch_end}/{num_chunks}", " ".join(all_texts))
+                progress_cb(progress, f"转写中 {chunk_idx + 1}/{num_chunks}", " ".join(all_texts))
 
-            streams = []
-            chunk_metas = []  # (offset_ms, duration_ms)
-            for chunk_idx in range(batch_start, batch_end):
-                start_idx = chunk_idx * chunk_size
-                end_idx = min(start_idx + chunk_size, total_samples)
-                chunk_samples = samples[start_idx:end_idx]
-                chunk_duration_ms = int((end_idx - start_idx) / sample_rate * 1000)
-                offset_ms = int(start_idx / sample_rate * 1000)
+            stream = self._recognizer.create_stream()
+            stream.accept_waveform(sample_rate, chunk_samples)
+            self._recognizer.decode_stream(stream)
 
-                s = self._recognizer.create_stream()
-                s.accept_waveform(sample_rate, chunk_samples)
-                streams.append(s)
-                chunk_metas.append((offset_ms, chunk_duration_ms))
+            chunk_text = stream.result.text.strip()
+            if chunk_text:
+                all_texts.append(chunk_text)
+                chunk_segs = self._create_segments(chunk_text, chunk_duration_ms)
+                for s in chunk_segs:
+                    s.index = len(all_segments)
+                    s.start_ms += current_offset_ms
+                    s.end_ms += current_offset_ms
+                    all_segments.append(s)
 
-            self._recognizer.decode_streams(streams)
-
-            for stream, (offset_ms, chunk_duration_ms) in zip(streams, chunk_metas):
-                chunk_text = stream.result.text.strip()
-                if chunk_text:
-                    all_texts.append(chunk_text)
-                    chunk_segs = self._create_segments(chunk_text, chunk_duration_ms)
-                    for seg in chunk_segs:
-                        seg.index = len(all_segments)
-                        seg.start_ms += offset_ms
-                        seg.end_ms += offset_ms
-                        all_segments.append(seg)
+            current_offset_ms += chunk_duration_ms
 
         final_text = " ".join(all_texts).strip()
         if progress_cb:
