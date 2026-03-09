@@ -59,12 +59,26 @@ if ($SherpaModelSrc) {
     Copy-Item (Join-Path $SherpaModelSrc "tokens.txt") $ModelsCache
 
     # Copy Silero VAD model if available
-    $SileroVad = Join-Path $env:USERPROFILE ".cache\sherpa-onnx\silero_vad.onnx"
-    if (Test-Path $SileroVad) {
+    # download_models.py saves to parent of sense-voice dir, check all possible locations
+    $PossibleVadPaths = @(
+        (Join-Path (Split-Path $SherpaModelSrc -Parent) "silero_vad.onnx"),
+        (Join-Path $env:LOCALAPPDATA "sherpa-onnx\silero_vad.onnx"),
+        (Join-Path $env:USERPROFILE ".cache\sherpa-onnx\silero_vad.onnx"),
+        (Join-Path $env:APPDATA "sherpa-onnx\silero_vad.onnx")
+    )
+    $SileroVad = $null
+    foreach ($vp in $PossibleVadPaths) {
+        if (Test-Path $vp) {
+            $SileroVad = $vp
+            break
+        }
+    }
+    if ($SileroVad) {
         Copy-Item $SileroVad $ModelsCache
-        Write-Host "Copied Silero VAD model"
+        Write-Host "Copied Silero VAD model from: $SileroVad"
     } else {
-        Write-Host "WARNING: silero_vad.onnx not found at $SileroVad"
+        Write-Host "WARNING: silero_vad.onnx not found in any expected location"
+        Write-Host "  Searched: $($PossibleVadPaths -join ', ')"
     }
 
     Write-Host "Copied models to: $ModelsCache"
@@ -82,19 +96,60 @@ if (Test-Path $FfmpegDir) {
 New-Item -ItemType Directory -Path $FfmpegDir -Force | Out-Null
 
 Write-Host "=== Bundling ffmpeg ==="
-# Try to find ffmpeg from PATH (installed via choco)
+
+# Helper: resolve Chocolatey shim to the actual binary.
+# Choco shims are tiny (~25KB) wrappers that won't work outside the choco environment.
+function Resolve-RealBinary {
+    param([string]$ShimPath)
+
+    # If the file is larger than 200KB, it's likely the real binary
+    $size = (Get-Item $ShimPath).Length
+    if ($size -gt 200KB) {
+        return $ShimPath
+    }
+
+    # Small file -> probably a Chocolatey shim. Find the real binary.
+    $name = [System.IO.Path]::GetFileNameWithoutExtension($ShimPath)
+    Write-Host "  $ShimPath looks like a shim ($([math]::Round($size/1KB))KB), searching for real binary..."
+
+    # Chocolatey typically installs ffmpeg under lib\ffmpeg\tools\...
+    $chocoLib = Join-Path $env:ChocolateyInstall "lib"
+    if (Test-Path $chocoLib) {
+        $real = Get-ChildItem -Path $chocoLib -Recurse -Filter "$name.exe" -ErrorAction SilentlyContinue |
+            Where-Object { $_.Length -gt 200KB } |
+            Select-Object -First 1
+        if ($real) {
+            Write-Host "  Resolved to: $($real.FullName) ($([math]::Round($real.Length/1MB))MB)"
+            return $real.FullName
+        }
+    }
+
+    # Fallback: return original (will likely fail at runtime, but download fallback below will catch it)
+    Write-Host "  WARNING: Could not resolve shim to real binary"
+    return $null
+}
+
+# Try to find ffmpeg from PATH
 $FfmpegPath = Get-Command ffmpeg -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
 $FfprobePath = Get-Command ffprobe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
+
+$RealFfmpeg = $null
+$RealFfprobe = $null
 
 if ($FfmpegPath -and $FfprobePath) {
     Write-Host "Found ffmpeg at: $FfmpegPath"
     Write-Host "Found ffprobe at: $FfprobePath"
-    Copy-Item $FfmpegPath $FfmpegDir
-    Copy-Item $FfprobePath $FfmpegDir
-    Get-ChildItem $FfmpegDir
+    $RealFfmpeg = Resolve-RealBinary $FfmpegPath
+    $RealFfprobe = Resolve-RealBinary $FfprobePath
+}
+
+if ($RealFfmpeg -and $RealFfprobe) {
+    Copy-Item $RealFfmpeg (Join-Path $FfmpegDir "ffmpeg.exe")
+    Copy-Item $RealFfprobe (Join-Path $FfmpegDir "ffprobe.exe")
+    Write-Host "Bundled real ffmpeg binaries:"
+    Get-ChildItem $FfmpegDir | ForEach-Object { Write-Host "  $($_.Name): $([math]::Round($_.Length/1MB))MB" }
 } else {
-    Write-Host "WARNING: ffmpeg/ffprobe not found, downloading..."
-    # Download static ffmpeg for Windows
+    Write-Host "ffmpeg not found or shim unresolvable, downloading static build..."
     $FfmpegUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
     $ZipPath = Join-Path $FfmpegDir "ffmpeg.zip"
 
@@ -110,7 +165,7 @@ if ($FfmpegPath -and $FfprobePath) {
         Remove-Item $ExtractedDir.FullName -Recurse -Force
     }
     Remove-Item $ZipPath -Force
-    Get-ChildItem $FfmpegDir
+    Get-ChildItem $FfmpegDir | ForEach-Object { Write-Host "  $($_.Name): $([math]::Round($_.Length/1MB))MB" }
 }
 
 # Build standalone backend executable with PyInstaller

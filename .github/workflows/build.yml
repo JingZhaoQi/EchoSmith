@@ -181,9 +181,25 @@ jobs:
         with:
           workspaces: tauri/src-tauri
 
-      - name: Install dependencies (Windows)
+      - name: Install ffmpeg (Windows)
+        shell: pwsh
         run: |
-          choco install ffmpeg -y
+          # Download static ffmpeg instead of choco (choco installs shims that can't be bundled)
+          $FfmpegUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+          $ZipPath = "$env:TEMP\ffmpeg.zip"
+          $ExtractDir = "$env:TEMP\ffmpeg-extract"
+          $InstallDir = "C:\ffmpeg"
+          Write-Host "Downloading static ffmpeg..."
+          Invoke-WebRequest -Uri $FfmpegUrl -OutFile $ZipPath
+          Expand-Archive -Path $ZipPath -DestinationPath $ExtractDir -Force
+          $BinDir = (Get-ChildItem $ExtractDir -Directory | Select-Object -First 1).FullName + "\bin"
+          New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+          Copy-Item "$BinDir\ffmpeg.exe" $InstallDir
+          Copy-Item "$BinDir\ffprobe.exe" $InstallDir
+          Write-Host "Installed ffmpeg to $InstallDir"
+          Get-ChildItem $InstallDir | ForEach-Object { Write-Host "  $($_.Name): $([math]::Round($_.Length/1MB))MB" }
+          # Add to PATH for build_backend.ps1
+          echo "$InstallDir" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
 
       - name: Install Python dependencies
         run: |

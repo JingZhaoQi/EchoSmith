@@ -40,9 +40,18 @@ def _subprocess_kwargs() -> dict:
 
 MODEL_CARD = "SenseVoice INT8 (sherpa-onnx)"
 
-# Default model directory
-DEFAULT_MODEL_DIR = os.path.expanduser("~/.cache/sherpa-onnx/sense-voice")
-DEFAULT_VAD_MODEL = os.path.expanduser("~/.cache/sherpa-onnx/silero_vad.onnx")
+# Default model directory (platform-aware, matches download_models.py)
+if platform.system() == "Windows":
+    _local_app_data = os.environ.get("LOCALAPPDATA", "")
+    if _local_app_data:
+        DEFAULT_MODEL_DIR = os.path.join(_local_app_data, "sherpa-onnx", "sense-voice")
+        DEFAULT_VAD_MODEL = os.path.join(_local_app_data, "sherpa-onnx", "silero_vad.onnx")
+    else:
+        DEFAULT_MODEL_DIR = os.path.expanduser("~/.cache/sherpa-onnx/sense-voice")
+        DEFAULT_VAD_MODEL = os.path.expanduser("~/.cache/sherpa-onnx/silero_vad.onnx")
+else:
+    DEFAULT_MODEL_DIR = os.path.expanduser("~/.cache/sherpa-onnx/sense-voice")
+    DEFAULT_VAD_MODEL = os.path.expanduser("~/.cache/sherpa-onnx/silero_vad.onnx")
 
 # Model download progress callback
 ModelDownloadCallback = Callable[[str, float, str], None]
