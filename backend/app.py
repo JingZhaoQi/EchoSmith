@@ -27,6 +27,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 try:
     from asr_engine import ASREngine
+    from correction_engine import CorrectionEngine
     from hotwords import HotwordManager
     from task_store import TaskRecord, TaskStatus, task_store
     from url_downloader import (
@@ -37,6 +38,7 @@ try:
     )
 except ImportError:
     from .asr_engine import ASREngine
+    from .correction_engine import CorrectionEngine
     from .hotwords import HotwordManager
     from .task_store import TaskRecord, TaskStatus, task_store
     from .url_downloader import (
@@ -82,7 +84,36 @@ def _get_hotwords_path() -> Path:
 
 hotword_manager = HotwordManager(_get_hotwords_path())
 
-engine = ASREngine()
+
+def _get_correction_model_path() -> str:
+    """Locate correction model: bundled first, then cache."""
+    import sys as _sys
+    if getattr(_sys, "frozen", False):
+        bundled = Path(_sys._MEIPASS) / "models_cache" / "correction" / "qwen2.5-0.5b-q4.gguf"
+        if bundled.exists():
+            return str(bundled)
+    if platform.system() == "Windows":
+        local = os.environ.get("LOCALAPPDATA", "")
+        if local:
+            return os.path.join(local, "sherpa-onnx", "correction", "qwen2.5-0.5b-q4.gguf")
+    return os.path.expanduser("~/.cache/sherpa-onnx/correction/qwen2.5-0.5b-q4.gguf")
+
+
+_correction_model_path = _get_correction_model_path()
+correction_engine: CorrectionEngine | None = None
+
+if Path(_correction_model_path).exists():
+    total_threads = ASREngine._default_num_threads()
+    _, c_threads = ASREngine._allocate_threads(total_threads, correction_active=True)
+    correction_engine = CorrectionEngine(
+        model_path=_correction_model_path,
+        hot_words=hotword_manager.list_all(),
+        num_threads=c_threads,
+    )
+    t_threads, _ = ASREngine._allocate_threads(total_threads, correction_active=True)
+    engine = ASREngine(num_threads=t_threads, correction_engine=correction_engine)
+else:
+    engine = ASREngine()
 API_TOKEN = os.environ.get("ECHOSMITH_TOKEN")
 UPLOAD_FILE_REQUIRED = File(...)
 LANGUAGE_FORM_FIELD = Form(default="zh")
@@ -125,6 +156,9 @@ async def healthcheck() -> JSONResponse:
             "download_message": download_message,
             "model_cache_dir": model_cache_dir,
             "ytdlp": ytdlp_ok,
+            "correction_model": Path(_correction_model_path).exists(),
+            "correction_model_loaded": correction_engine is not None and correction_engine.has_model(),
+            "correction_model_path": _correction_model_path,
             "status": "ok" if ffmpeg_ok else "degraded",
             "debug": debug_info,
         }
@@ -147,6 +181,25 @@ async def trigger_model_download(_: None = Depends(verify_token)) -> JSONRespons
         return JSONResponse({"status": "already_downloading"})
 
     asyncio.create_task(engine.ensure_model())
+    return JSONResponse({"status": "started"})
+
+
+@app.post("/api/models/correction/download")
+async def trigger_correction_download(_: None = Depends(verify_token)) -> JSONResponse:
+    if Path(_correction_model_path).exists():
+        return JSONResponse({"status": "already_exists"})
+
+    async def _download_correction_model() -> None:
+        try:
+            from scripts_bridge import download_correction_model as _dl
+            import asyncio
+            loop = asyncio.get_running_loop()
+            cache_dir = Path(_correction_model_path).parent.parent
+            await loop.run_in_executor(None, _dl, cache_dir)
+        except Exception as exc:
+            print(f"[CORRECTION] Download failed: {exc}", flush=True)
+
+    asyncio.create_task(_download_correction_model())
     return JSONResponse({"status": "started"})
 
 
