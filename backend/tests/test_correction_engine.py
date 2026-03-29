@@ -2,17 +2,14 @@
 from __future__ import annotations
 
 import sys
-import types
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-# Mock llama_cpp module so tests run without the native dependency
-_mock_llama_cpp = types.ModuleType("llama_cpp")
-_mock_llama_cpp.Llama = MagicMock  # type: ignore[attr-defined]
-sys.modules.setdefault("llama_cpp", _mock_llama_cpp)
-
 from correction_engine import CorrectionEngine, build_correction_prompt
+
+# Reference to the mocked llama_cpp module (set up in conftest.py)
+_mock_llama_cpp = sys.modules["llama_cpp"]
 
 
 class TestBuildPrompt:
