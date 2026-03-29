@@ -66,6 +66,12 @@ if getattr(sys, "frozen", False):
     bundle_dir = Path(sys._MEIPASS)  # type: ignore
     if str(bundle_dir) not in sys.path:
         sys.path.insert(0, str(bundle_dir))
+
+    # Log bundled correction model availability
+    bundled_correction = bundle_dir / "models_cache" / "correction"
+    if bundled_correction.exists():
+        print(f"[INIT] Found bundled correction model at: {bundled_correction}")
+
     from app import app
 else:
     # Running in development
