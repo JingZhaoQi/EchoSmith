@@ -7,6 +7,7 @@ import os
 import platform
 import shutil
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -29,6 +30,7 @@ try:
     from asr_engine import ASREngine
     from correction_engine import CorrectionEngine
     from hotwords import HotwordManager
+    from settings import SettingsManager
     from task_store import TaskRecord, TaskStatus, task_store
     from url_downloader import (
         download_audio,
@@ -40,6 +42,7 @@ except ImportError:
     from .asr_engine import ASREngine
     from .correction_engine import CorrectionEngine
     from .hotwords import HotwordManager
+    from .settings import SettingsManager
     from .task_store import TaskRecord, TaskStatus, task_store
     from .url_downloader import (
         download_audio,
@@ -83,37 +86,43 @@ def _get_hotwords_path() -> Path:
 
 
 hotword_manager = HotwordManager(_get_hotwords_path())
+settings_manager = SettingsManager(_get_hotwords_path().parent / "settings.json")
 
 
 def _get_correction_model_path() -> str:
     """Locate correction model: bundled first, then cache."""
     import sys as _sys
     if getattr(_sys, "frozen", False):
-        bundled = Path(_sys._MEIPASS) / "models_cache" / "correction" / "qwen2.5-0.5b-q4.gguf"
+        bundled = Path(_sys._MEIPASS) / "models_cache" / "correction" / "qwen2.5-3b-q4.gguf"
         if bundled.exists():
             return str(bundled)
     if platform.system() == "Windows":
         local = os.environ.get("LOCALAPPDATA", "")
         if local:
-            return os.path.join(local, "sherpa-onnx", "correction", "qwen2.5-0.5b-q4.gguf")
-    return os.path.expanduser("~/.cache/sherpa-onnx/correction/qwen2.5-0.5b-q4.gguf")
+            return os.path.join(local, "sherpa-onnx", "correction", "qwen2.5-3b-q4.gguf")
+    return os.path.expanduser("~/.cache/sherpa-onnx/correction/qwen2.5-3b-q4.gguf")
 
 
-_correction_model_path = _get_correction_model_path()
-correction_engine: CorrectionEngine | None = None
-
-if Path(_correction_model_path).exists():
+def _build_correction_engine() -> CorrectionEngine | None:
+    cfg = settings_manager.get().correction
+    if cfg.mode == "none":
+        return None
     total_threads = ASREngine._default_num_threads()
-    _, c_threads = ASREngine._allocate_threads(total_threads, correction_active=True)
-    correction_engine = CorrectionEngine(
-        model_path=_correction_model_path,
+    _, c_threads = ASREngine._allocate_threads(total_threads, correction_active=(cfg.mode == "local_3b"))
+    return CorrectionEngine(
+        mode=cfg.mode,
+        model_path=_get_correction_model_path(),
         hot_words=hotword_manager.list_all(),
         num_threads=c_threads,
+        api_provider=cfg.api_provider,
+        api_key=cfg.api_key,
+        api_model=cfg.api_model,
+        api_base_url=cfg.api_base_url,
     )
-    t_threads, _ = ASREngine._allocate_threads(total_threads, correction_active=True)
-    engine = ASREngine(num_threads=t_threads, correction_engine=correction_engine)
-else:
-    engine = ASREngine()
+
+
+_correction_engine = _build_correction_engine()
+engine = ASREngine(correction_engine=_correction_engine)
 API_TOKEN = os.environ.get("ECHOSMITH_TOKEN")
 UPLOAD_FILE_REQUIRED = File(...)
 LANGUAGE_FORM_FIELD = Form(default="zh")
@@ -156,9 +165,9 @@ async def healthcheck() -> JSONResponse:
             "download_message": download_message,
             "model_cache_dir": model_cache_dir,
             "ytdlp": ytdlp_ok,
-            "correction_model": Path(_correction_model_path).exists(),
-            "correction_model_loaded": correction_engine is not None and correction_engine.has_model(),
-            "correction_model_path": _correction_model_path,
+            "correction_mode": settings_manager.get().correction.mode,
+            "correction_model_available": Path(_get_correction_model_path()).exists(),
+            "correction_model_path": _get_correction_model_path(),
             "status": "ok" if ffmpeg_ok else "degraded",
             "debug": debug_info,
         }
@@ -186,21 +195,28 @@ async def trigger_model_download(_: None = Depends(verify_token)) -> JSONRespons
 
 @app.post("/api/models/correction/download")
 async def trigger_correction_download(_: None = Depends(verify_token)) -> JSONResponse:
-    if Path(_correction_model_path).exists():
+    model_path = _get_correction_model_path()
+    if Path(model_path).exists():
         return JSONResponse({"status": "already_exists"})
-
-    async def _download_correction_model() -> None:
-        try:
-            from scripts_bridge import download_correction_model as _dl
-            import asyncio
-            loop = asyncio.get_running_loop()
-            cache_dir = Path(_correction_model_path).parent.parent
-            await loop.run_in_executor(None, _dl, cache_dir)
-        except Exception as exc:
-            print(f"[CORRECTION] Download failed: {exc}", flush=True)
-
-    asyncio.create_task(_download_correction_model())
+    asyncio.create_task(_download_correction_model_bg(model_path))
     return JSONResponse({"status": "started"})
+
+
+async def _download_correction_model_bg(model_path: str) -> None:
+    import urllib.request
+    url = "https://modelscope.cn/models/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/master/qwen2.5-3b-instruct-q4_k_m.gguf"
+    dest = Path(model_path)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    await asyncio.to_thread(urllib.request.urlretrieve, url, str(dest))
+    print(f"[MODEL] 3B correction model downloaded to {dest}", flush=True)
+
+
+@app.get("/api/models/correction/status")
+async def correction_model_status(_: None = Depends(verify_token)) -> JSONResponse:
+    model_path = _get_correction_model_path()
+    exists = Path(model_path).exists()
+    size_mb = Path(model_path).stat().st_size / 1024 / 1024 if exists else 0
+    return JSONResponse({"exists": exists, "size_mb": round(size_mb, 1), "path": model_path})
 
 
 @app.get("/api/hotwords")
@@ -222,6 +238,29 @@ async def add_hotword(request: Request, _: None = Depends(verify_token)) -> JSON
 async def remove_hotword(word: str, _: None = Depends(verify_token)) -> JSONResponse:
     hotword_manager.remove(word)
     return JSONResponse({"words": hotword_manager.list_all()})
+
+
+@app.get("/api/settings")
+async def get_settings(_: None = Depends(verify_token)) -> JSONResponse:
+    return JSONResponse(settings_manager.snapshot())
+
+
+@app.post("/api/settings")
+async def update_settings(request: Request, _: None = Depends(verify_token)) -> JSONResponse:
+    global _correction_engine
+    body = await request.json()
+    correction = body.get("correction", {})
+    if correction:
+        # If api_key is masked placeholder, keep the existing key
+        if "api_key" in correction and "****" in correction["api_key"]:
+            del correction["api_key"]
+        settings_manager.update_correction(**correction)
+
+    # Rebuild correction engine with new settings
+    _correction_engine = _build_correction_engine()
+    engine._correction_engine = _correction_engine
+
+    return JSONResponse(settings_manager.snapshot())
 
 
 @app.get("/api/tasks")
@@ -435,11 +474,21 @@ async def _run_task(task_id: str, source_info: dict, cleanup_paths: list[str]) -
     loop = asyncio.get_running_loop()
     control = TASK_CONTROLS.get(task_id)
 
+    _max_progress = 0.0
+    _progress_lock = threading.Lock()
+
     def progress_cb(progress: float, stage: str, partial: str) -> None:
+        nonlocal _max_progress
         if control and not control.pause_event.is_set():
             status = TaskStatus.PAUSED
         else:
             status = TaskStatus.RUNNING
+        # Ensure progress only goes forward
+        with _progress_lock:
+            if progress > _max_progress:
+                _max_progress = progress
+            else:
+                progress = _max_progress
         asyncio.run_coroutine_threadsafe(
             task_store.update_task(
                 task_id,
