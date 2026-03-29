@@ -15,7 +15,7 @@ a = Analysis(
     hiddenimports=[
         'backend.app', 'backend.asr_engine', 'backend.task_store',
         'backend.url_downloader', 'backend.correction_engine',
-        'backend.hotwords', 'backend.pipeline',
+        'backend.hotwords', 'backend.pipeline', 'backend.settings',
     ],
     hookspath=[],
     hooksconfig={},
