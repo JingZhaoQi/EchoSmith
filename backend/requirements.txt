@@ -6,3 +6,4 @@ python-multipart>=0.0.6
 yt-dlp>=2024.1.0
 requests>=2.28
 certifi
+llama-cpp-python>=0.3.0
