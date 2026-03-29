@@ -4,11 +4,12 @@ import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-quer
 
 import { useTheme } from "../hooks/useTheme";
 import { BatchTaskComposer } from "../components/BatchTaskComposer";
-import { HotwordSettings } from "../components/HotwordSettings";
+import { SettingsPanel } from "../components/SettingsPanel";
 import { UrlTaskComposer } from "../components/UrlTaskComposer";
 import { TaskStreamPanel } from "../components/TaskStreamPanel";
 import { ResultPanel } from "../components/ResultPanel";
 import { ThemeToggle } from "../components/ThemeToggle";
+import { SettingsIcon } from "lucide-react";
 import { ensureBackendBase, fetchHealth, listTasks } from "../lib/api";
 import { useBackendStatus } from "../lib/backendStatus";
 import { useTasksStore } from "../hooks/useTasksStore";
@@ -24,6 +25,7 @@ type LeftTab = "batch" | "url";
 function AppShell(): JSX.Element {
   const [theme, setTheme] = useTheme();
   const [leftTab, setLeftTab] = useState<LeftTab>("batch");
+  const [showSettings, setShowSettings] = useState(false);
   const activeTaskId = useTasksStore((state) => state.activeTaskId);
   const setTasks = useTasksStore((state) => state.setTasks);
   const setActiveTask = useTasksStore((state) => state.setActiveTask);
@@ -138,6 +140,13 @@ function AppShell(): JSX.Element {
               </div>
             ) : null}
 
+            <button
+              onClick={() => setShowSettings(!showSettings)}
+              className="p-2 rounded-lg hover:bg-black/[0.06] dark:hover:bg-white/[0.06] transition-colors"
+              title="设置"
+            >
+              <SettingsIcon className="h-4 w-4" />
+            </button>
             <ThemeToggle theme={theme} onThemeChange={setTheme} />
           </div>
         </header>
@@ -176,7 +185,6 @@ function AppShell(): JSX.Element {
               <div className="flex-1 min-h-0">
                 {leftTab === "batch" ? <BatchTaskComposer /> : <UrlTaskComposer />}
               </div>
-              <HotwordSettings />
             </div>
           </section>
           <section className="flex flex-col gap-6 animate-slide-in-right min-h-0">
@@ -184,6 +192,8 @@ function AppShell(): JSX.Element {
             <ResultPanel />
           </section>
         </main>
+
+        {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
       </div>
 
       {/* Additional animations CSS */}
