@@ -1,9 +1,16 @@
 """Tests for CorrectionEngine."""
 from __future__ import annotations
 
+import sys
+import types
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+# Mock llama_cpp module so tests run without the native dependency
+_mock_llama_cpp = types.ModuleType("llama_cpp")
+_mock_llama_cpp.Llama = MagicMock  # type: ignore[attr-defined]
+sys.modules.setdefault("llama_cpp", _mock_llama_cpp)
 
 from correction_engine import CorrectionEngine, build_correction_prompt
 
@@ -85,37 +92,33 @@ class TestCorrectionEngine:
         engine = CorrectionEngine(model_path="/nonexistent/model.gguf")
         assert engine.has_model() is False
 
-    @patch("correction_engine.Llama")
-    def test_correct_calls_llm(self, mock_llama_cls: MagicMock) -> None:
+    def test_correct_calls_llm(self) -> None:
         mock_llm = MagicMock()
         mock_llm.create_chat_completion.return_value = {
-            "choices": [{"message": {"content": "[1] 纠正后的文本。"}}]
+            "choices": [{"message": {"content": "[1] corrected text."}}]
         }
-        mock_llama_cls.return_value = mock_llm
-
-        engine = CorrectionEngine(
-            model_path="/fake/model.gguf", num_threads=1
-        )
-        engine.load_model()
-        result = engine.correct(["原始文本。"])
-        assert result == ["纠正后的文本。"]
+        with patch.object(_mock_llama_cpp, "Llama", return_value=mock_llm):
+            engine = CorrectionEngine(
+                model_path="/fake/model.gguf", num_threads=1
+            )
+            engine.load_model()
+            result = engine.correct(["original text."])
+        assert result == ["corrected text."]
         mock_llm.create_chat_completion.assert_called_once()
 
-    @patch("correction_engine.Llama")
-    def test_correct_with_hotwords(self, mock_llama_cls: MagicMock) -> None:
+    def test_correct_with_hotwords(self) -> None:
         mock_llm = MagicMock()
         mock_llm.create_chat_completion.return_value = {
             "choices": [{"message": {"content": "[1] 暗能量驱动宇宙加速膨胀。"}}]
         }
-        mock_llama_cls.return_value = mock_llm
-
-        engine = CorrectionEngine(
-            model_path="/fake/model.gguf",
-            hot_words=["暗能量"],
-            num_threads=1,
-        )
-        engine.load_model()
-        result = engine.correct(["暗能量驱动宇宙加速膨胀。"])
+        with patch.object(_mock_llama_cpp, "Llama", return_value=mock_llm):
+            engine = CorrectionEngine(
+                model_path="/fake/model.gguf",
+                hot_words=["暗能量"],
+                num_threads=1,
+            )
+            engine.load_model()
+            result = engine.correct(["暗能量驱动宇宙加速膨胀。"])
         assert result == ["暗能量驱动宇宙加速膨胀。"]
 
     def test_correct_without_model_returns_original(self) -> None:
