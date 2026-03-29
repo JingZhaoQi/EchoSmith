@@ -221,6 +221,24 @@ def download_silero_vad(cache_root: Path) -> None:
     print(f"Silero VAD downloaded: {vad_path} ({vad_path.stat().st_size / 1024 / 1024:.1f} MB)")
 
 
+# Qwen2.5-0.5B Q4 GGUF for correction
+CORRECTION_MODEL_URL = "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+CORRECTION_MODEL_NAME = "qwen2.5-0.5b-q4.gguf"
+
+
+def download_correction_model(cache_dir: Path) -> None:
+    """Download Qwen2.5-0.5B Q4 GGUF model for post-correction."""
+    correction_dir = cache_dir / "correction"
+    model_path = correction_dir / CORRECTION_MODEL_NAME
+    if model_path.exists():
+        print(f"Correction model already exists: {model_path} ({model_path.stat().st_size / 1024 / 1024:.1f} MB)")
+        return
+
+    correction_dir.mkdir(parents=True, exist_ok=True)
+    download_file(CORRECTION_MODEL_URL, model_path, "Downloading correction model (Qwen2.5-0.5B Q4)")
+    print(f"Correction model downloaded: {model_path} ({model_path.stat().st_size / 1024 / 1024:.1f} MB)")
+
+
 if __name__ == "__main__":
     # Default cache directory (platform-aware)
     default_cache = get_default_cache_dir()
@@ -234,6 +252,7 @@ if __name__ == "__main__":
     try:
         download_models(cache_dir)
         download_silero_vad(cache_dir.parent)
+        download_correction_model(cache_dir.parent)
     except Exception as e:
         print(f"\n[ERROR] Error downloading models: {e}", file=sys.stderr)
         sys.exit(1)
