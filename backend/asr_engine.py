@@ -127,6 +127,19 @@ class ASREngine:
         # for ONNX int8 inference and more threads just add overhead.
         return min(physical, 8)
 
+    @staticmethod
+    def _allocate_threads(total: int, correction_active: bool) -> tuple[int, int]:
+        """Return (transcribe_threads, correction_threads).
+
+        When correction is active, split physical cores 2:1.
+        When inactive, all cores go to transcription.
+        """
+        if not correction_active:
+            return total, 0
+        transcribe = max(2, total * 2 // 3)
+        correction = max(1, total - transcribe)
+        return transcribe, correction
+
     SUPPORTED_LANGUAGES = {"zh", "en"}
 
     def __init__(
