@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import platform
 import shutil
 import tempfile
 import time
@@ -26,6 +27,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 try:
     from asr_engine import ASREngine
+    from hotwords import HotwordManager
     from task_store import TaskRecord, TaskStatus, task_store
     from url_downloader import (
         download_audio,
@@ -35,6 +37,7 @@ try:
     )
 except ImportError:
     from .asr_engine import ASREngine
+    from .hotwords import HotwordManager
     from .task_store import TaskRecord, TaskStatus, task_store
     from .url_downloader import (
         download_audio,
@@ -65,6 +68,19 @@ app.add_middleware(
 
 UPLOAD_ROOT = Path(tempfile.gettempdir()) / "echosmith_uploads"
 UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
+
+
+def _get_hotwords_path() -> Path:
+    if platform.system() == "Darwin":
+        return Path.home() / "Library" / "Application Support" / "com.echosmith.app" / "hotwords.json"
+    elif platform.system() == "Windows":
+        appdata = os.environ.get("APPDATA", "")
+        if appdata:
+            return Path(appdata) / "echosmith" / "hotwords.json"
+    return Path.home() / ".config" / "echosmith" / "hotwords.json"
+
+
+hotword_manager = HotwordManager(_get_hotwords_path())
 
 engine = ASREngine()
 API_TOKEN = os.environ.get("ECHOSMITH_TOKEN")
@@ -132,6 +148,27 @@ async def trigger_model_download(_: None = Depends(verify_token)) -> JSONRespons
 
     asyncio.create_task(engine.ensure_model())
     return JSONResponse({"status": "started"})
+
+
+@app.get("/api/hotwords")
+async def list_hotwords(_: None = Depends(verify_token)) -> JSONResponse:
+    return JSONResponse({"words": hotword_manager.list_all()})
+
+
+@app.post("/api/hotwords")
+async def add_hotword(request: Request, _: None = Depends(verify_token)) -> JSONResponse:
+    body = await request.json()
+    word = body.get("word", "").strip()
+    if not word:
+        raise HTTPException(status_code=400, detail="热词不能为空")
+    hotword_manager.add(word)
+    return JSONResponse({"words": hotword_manager.list_all()})
+
+
+@app.delete("/api/hotwords/{word}")
+async def remove_hotword(word: str, _: None = Depends(verify_token)) -> JSONResponse:
+    hotword_manager.remove(word)
+    return JSONResponse({"words": hotword_manager.list_all()})
 
 
 @app.get("/api/tasks")
@@ -436,6 +473,10 @@ async def _run_task(task_id: str, source_info: dict, cleanup_paths: list[str]) -
 
         # Apply language setting from task
         await engine.set_language(source_info.get("language", "zh"))
+
+        # Update correction engine hotwords for this task
+        if engine._correction_engine:
+            engine._correction_engine.set_hot_words(hotword_manager.list_all())
 
         # For URL tasks, map transcription progress from 0.3 to 1.0
         if source_info.get("type") == "url":
