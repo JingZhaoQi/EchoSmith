@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import os
 import platform
+import queue
 import re
 import subprocess
+import threading
 import wave
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 
@@ -134,6 +136,7 @@ class ASREngine:
         num_threads: int = 0,
         use_int8: bool = True,
         language: str = "zh",
+        correction_engine=None,  # CorrectionEngine | None
     ) -> None:
         self._recognizer: sherpa_onnx.OfflineRecognizer | None = None
         self._vad_config: sherpa_onnx.VadModelConfig | None = None
@@ -146,6 +149,7 @@ class ASREngine:
         self._num_threads = num_threads or self._default_num_threads()
         self._use_int8 = use_int8
         self._language = language if language in self.SUPPORTED_LANGUAGES else "zh"
+        self._correction_engine = correction_engine
 
     def get_model_cache_dir(self) -> str:
         """Get the directory where models will be cached."""
@@ -395,15 +399,42 @@ class ASREngine:
                 progress_cb(1.0, "完成", "")
             return TranscriptionResult(text="", segments=[], duration_ms=duration_ms)
 
-        all_texts: list[str] = []
-        all_segments: list[Segment] = []
+        from pipeline import correction_worker, SENTINEL
+
+        seg_queue: queue.Queue = queue.Queue()
+        corrected_output: list[Segment] = []
+        output_lock = threading.Lock()
         total = len(speech_segments)
+
+        # Correction progress callback
+        def correction_progress_cb(count: int, stage: str) -> None:
+            if progress_cb:
+                ratio = min(count / total, 1.0)
+                progress_cb(0.70 + 0.25 * ratio, stage, "")
+
+        # Start correction worker thread
+        correction_thread = threading.Thread(
+            target=correction_worker,
+            kwargs=dict(
+                seg_queue=seg_queue,
+                output=corrected_output,
+                output_lock=output_lock,
+                correction_engine=self._correction_engine,
+                batch_size=5,
+                progress_cb=correction_progress_cb,
+            ),
+            daemon=True,
+        )
+        correction_thread.start()
+
+        # Transcription producer loop (existing logic, now puts into queue)
+        all_texts: list[str] = []
 
         for idx, seg in enumerate(speech_segments):
             if self._check_interrupted(pause_event, cancelled_checker):
                 break
 
-            progress = 0.15 + 0.80 * (idx / total)
+            progress = 0.15 + 0.55 * (idx / total)
             if progress_cb:
                 progress_cb(progress, f"转写中 {idx + 1}/{total}", " ".join(all_texts))
 
@@ -420,7 +451,6 @@ class ASREngine:
             start_ms = int(seg.start_sample / sample_rate * 1000)
             end_ms = start_ms + int(len(seg.samples) / sample_rate * 1000)
 
-            # Split into sentence-level segments within this VAD region
             sentences = _split_sentences(text) or [text]
             seg_duration_ms = end_ms - start_ms
             total_chars = sum(len(s) for s in sentences)
@@ -431,20 +461,32 @@ class ASREngine:
                 s_end = cursor_ms + int(seg_duration_ms * proportion)
                 if s_idx == len(sentences) - 1:
                     s_end = end_ms
-                all_segments.append(Segment(
-                    index=len(all_segments),
+                segment = Segment(
+                    index=0,  # will be reassigned after correction
                     start_ms=cursor_ms,
                     end_ms=s_end,
                     text=sentence,
-                ))
+                )
+                seg_queue.put(segment)
                 cursor_ms = s_end
 
-        final_text = " ".join(all_texts).strip()
+        # Signal end to correction thread
+        seg_queue.put(SENTINEL)
+        correction_thread.join(timeout=120)
+
+        # Reassign indices and build final result
+        with output_lock:
+            for i, seg in enumerate(corrected_output):
+                corrected_output[i] = replace(seg, index=i)
+
+        final_text = " ".join(seg.text for seg in corrected_output).strip()
 
         if progress_cb:
             progress_cb(1.0, "完成", final_text)
 
-        return TranscriptionResult(text=final_text, segments=all_segments, duration_ms=duration_ms)
+        return TranscriptionResult(
+            text=final_text, segments=corrected_output, duration_ms=duration_ms
+        )
 
     def _transcribe_fixed_chunks(
         self,
