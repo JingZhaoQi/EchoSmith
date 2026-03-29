@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-quer
 
 import { useTheme } from "../hooks/useTheme";
 import { BatchTaskComposer } from "../components/BatchTaskComposer";
+import { HotwordSettings } from "../components/HotwordSettings";
 import { UrlTaskComposer } from "../components/UrlTaskComposer";
 import { TaskStreamPanel } from "../components/TaskStreamPanel";
 import { ResultPanel } from "../components/ResultPanel";
@@ -171,8 +172,11 @@ function AppShell(): JSX.Element {
                 </button>
               ))}
             </div>
-            <div className="flex-1 min-h-0">
-              {leftTab === "batch" ? <BatchTaskComposer /> : <UrlTaskComposer />}
+            <div className="flex-1 min-h-0 flex flex-col gap-4">
+              <div className="flex-1 min-h-0">
+                {leftTab === "batch" ? <BatchTaskComposer /> : <UrlTaskComposer />}
+              </div>
+              <HotwordSettings />
             </div>
           </section>
           <section className="flex flex-col gap-6 animate-slide-in-right min-h-0">
