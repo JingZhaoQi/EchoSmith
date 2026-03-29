@@ -11,6 +11,9 @@ export interface HealthStatus {
   download_progress?: number;
   download_message?: string;
   ytdlp?: boolean;
+  correction_model?: boolean;
+  correction_model_loaded?: boolean;
+  correction_model_path?: string;
 }
 
 export type TaskStatus = "queued" | "running" | "paused" | "completed" | "failed" | "cancelled";
@@ -171,6 +174,9 @@ export async function fetchHealth(): Promise<HealthStatus> {
     download_progress: data.download_progress ?? (data.model_downloading ? 0 : 1),
     download_message: data.download_message,
     ytdlp: data.ytdlp ?? false,
+    correction_model: data.correction_model ?? false,
+    correction_model_loaded: data.correction_model_loaded ?? false,
+    correction_model_path: data.correction_model_path,
   };
 }
 
@@ -179,6 +185,32 @@ type ModelDownloadStatus = "started" | "already_downloading" | "already_exists";
 export async function triggerModelDownload(): Promise<{ status: ModelDownloadStatus }> {
   await ensureBackendBase();
   const response = await apiClient.post<{ status: ModelDownloadStatus }>("/models/download");
+  return response.data;
+}
+
+export async function fetchHotwords(): Promise<string[]> {
+  await ensureBackendBase();
+  const response = await apiClient.get<{ words: string[] }>("/hotwords");
+  return response.data.words;
+}
+
+export async function addHotword(word: string): Promise<string[]> {
+  await ensureBackendBase();
+  const response = await apiClient.post<{ words: string[] }>("/hotwords", { word });
+  return response.data.words;
+}
+
+export async function removeHotword(word: string): Promise<string[]> {
+  await ensureBackendBase();
+  const response = await apiClient.delete<{ words: string[] }>(
+    `/hotwords/${encodeURIComponent(word)}`
+  );
+  return response.data.words;
+}
+
+export async function triggerCorrectionModelDownload(): Promise<{ status: string }> {
+  await ensureBackendBase();
+  const response = await apiClient.post<{ status: string }>("/models/correction/download");
   return response.data;
 }
 
