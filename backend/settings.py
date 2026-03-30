@@ -16,8 +16,16 @@ class CorrectionConfig:
 
 
 @dataclass
+class ApiUsageStats:
+    total_calls: int = 0
+    total_segments: int = 0
+    failed_calls: int = 0
+
+
+@dataclass
 class AppSettings:
     correction: CorrectionConfig = field(default_factory=CorrectionConfig)
+    api_usage: ApiUsageStats = field(default_factory=ApiUsageStats)
 
 
 class SettingsManager:
@@ -39,6 +47,12 @@ class SettingsManager:
                 api_model=correction_data.get("api_model", "gpt-4o-mini"),
                 api_base_url=correction_data.get("api_base_url", ""),
             )
+            usage_data = data.get("api_usage", {})
+            self._settings.api_usage = ApiUsageStats(
+                total_calls=usage_data.get("total_calls", 0),
+                total_segments=usage_data.get("total_segments", 0),
+                failed_calls=usage_data.get("failed_calls", 0),
+            )
         except (json.JSONDecodeError, KeyError, TypeError):
             pass
 
@@ -58,6 +72,17 @@ class SettingsManager:
                 setattr(self._settings.correction, key, value)
         self.save()
         return self._settings.correction
+
+    def record_api_call(self, num_segments: int, failed: bool = False) -> None:
+        self._settings.api_usage.total_calls += 1
+        self._settings.api_usage.total_segments += num_segments
+        if failed:
+            self._settings.api_usage.failed_calls += 1
+        self.save()
+
+    def reset_usage(self) -> None:
+        self._settings.api_usage = ApiUsageStats()
+        self.save()
 
     def snapshot(self) -> dict:
         """Return settings with api_key masked for frontend."""

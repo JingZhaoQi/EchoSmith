@@ -211,21 +211,33 @@ export async function removeHotword(word: string): Promise<string[]> {
 // Settings types
 export interface CorrectionConfig {
   mode: "none" | "local_3b" | "cloud_api";
-  api_provider: "openai" | "anthropic" | "deepseek" | "custom";
+  api_provider: "doubao" | "openai" | "anthropic" | "deepseek" | "custom";
   api_key: string;
   api_key_set: boolean;
   api_model: string;
   api_base_url: string;
 }
 
+export interface ApiUsageStats {
+  total_calls: number;
+  total_segments: number;
+  failed_calls: number;
+}
+
 export interface AppSettings {
   correction: CorrectionConfig;
+  api_usage: ApiUsageStats;
 }
 
 export interface CorrectionModelStatus {
   exists: boolean;
   size_mb: number;
   path: string;
+  downloading: boolean;
+  progress: number;
+  total_mb: number;
+  downloaded_mb: number;
+  error: string;
 }
 
 // Settings API
@@ -250,6 +262,12 @@ export async function fetchCorrectionModelStatus(): Promise<CorrectionModelStatu
 export async function triggerCorrectionModelDownload(): Promise<{ status: string }> {
   await ensureBackendBase();
   const response = await apiClient.post<{ status: string }>("/models/correction/download");
+  return response.data;
+}
+
+export async function resetApiUsage(): Promise<AppSettings> {
+  await ensureBackendBase();
+  const response = await apiClient.post<AppSettings>("/settings/reset-usage");
   return response.data;
 }
 

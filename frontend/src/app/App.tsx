@@ -1,4 +1,4 @@
-// Enhanced version of App.tsx with modern UI improvements
+// Three-stage UI: Audio Source | ASR Results | Correction Results
 import { useEffect, useState } from "react";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 
@@ -6,12 +6,13 @@ import { useTheme } from "../hooks/useTheme";
 import { BatchTaskComposer } from "../components/BatchTaskComposer";
 import { SettingsPanel } from "../components/SettingsPanel";
 import { UrlTaskComposer } from "../components/UrlTaskComposer";
-import { TaskStreamPanel } from "../components/TaskStreamPanel";
+// TaskStreamPanel is now embedded inside BatchTaskComposer
 import { ResultPanel } from "../components/ResultPanel";
+import { CorrectionPanel } from "../components/CorrectionPanel";
 import { ThemeToggle } from "../components/ThemeToggle";
+import { Button } from "../components/ui/button";
 import { SettingsIcon } from "lucide-react";
-import { ensureBackendBase, fetchHealth, listTasks } from "../lib/api";
-import { useBackendStatus } from "../lib/backendStatus";
+import { ensureBackendBase, fetchHealth, fetchSettings, listTasks } from "../lib/api";
 import { useTasksStore } from "../hooks/useTasksStore";
 import { useTaskSubscription } from "../hooks/useTaskSubscription";
 import { AuroraBackground } from "../components/ui/aurora-background";
@@ -26,16 +27,11 @@ function AppShell(): JSX.Element {
   const [theme, setTheme] = useTheme();
   const [leftTab, setLeftTab] = useState<LeftTab>("batch");
   const [showSettings, setShowSettings] = useState(false);
+  const [correctionActive, setCorrectionActive] = useState(false);
   const activeTaskId = useTasksStore((state) => state.activeTaskId);
   const setTasks = useTasksStore((state) => state.setTasks);
   const setActiveTask = useTasksStore((state) => state.setActiveTask);
-  const backendStatus = useBackendStatus();
-
-  const {
-    data: health,
-    isLoading: isHealthLoading,
-    isError: isHealthError
-  } = useQuery({ queryKey: ["health"], queryFn: fetchHealth, refetchInterval: 30_000 });
+  useQuery({ queryKey: ["health"], queryFn: fetchHealth, refetchInterval: 30_000 });
   const tasksQuery = useQuery({
     queryKey: ["tasks"],
     queryFn: listTasks
@@ -58,105 +54,56 @@ function AppShell(): JSX.Element {
     void ensureBackendBase();
   }, []);
 
-  const healthStatusText = (() => {
-    if (isHealthLoading) {
-      return "后端检测中…";
+  // Refresh correction status on mount and when settings panel closes
+  useEffect(() => {
+    if (!showSettings) {
+      fetchSettings()
+        .then((s) => setCorrectionActive(s.correction.mode !== "none" && s.correction.api_key_set))
+        .catch(() => {});
     }
-    if (isHealthError) {
-      return "后端不可用";
-    }
-    if (health?.status === "ok") {
-      return "后端在线";
-    }
-    // 显示具体缺少什么
-    if (health && !health.ffmpeg) {
-      return "缺少 ffmpeg（brew install ffmpeg）";
-    }
-    return "后端降级";
-  })();
-
-  const healthIndicatorClass = (() => {
-    if (isHealthLoading) {
-      return "bg-amber-400 animate-pulse";
-    }
-    if (isHealthError || health?.status !== "ok") {
-      return "bg-red-500";
-    }
-    return "bg-emerald-500";
-  })();
-
-  const backendStatusLabel = (() => {
-    if (backendStatus.status === "ready") {
-      return null;
-    }
-    if (backendStatus.status === "error") {
-      return backendStatus.message ?? "后端认证失败";
-    }
-    if (backendStatus.status === "initializing") {
-      return backendStatus.message ?? "后端启动中…";
-    }
-    return null;
-  })();
+  }, [showSettings]);
 
   return (
     <AuroraBackground className="h-screen">
       <div className="h-screen flex flex-col backdrop-blur-[2px] overflow-hidden">
-        {/* macOS-style Header */}
-        <header className="border-b border-black/[0.08] dark:border-white/[0.08] backdrop-blur-2xl backdrop-saturate-150 bg-white/80 dark:bg-zinc-900/80 px-8 py-4 flex items-center justify-between sticky top-0 z-50 shadow-[0_1px_0_rgba(0,0,0,0.05)] dark:shadow-[0_1px_0_rgba(255,255,255,0.05)]">
-          <div className="flex items-center gap-4">
-            <div className="relative group">
-              <img
-                src={logoUrl}
-                alt="EchoSmith logo"
-                className="h-10 w-10 relative transform group-hover:scale-105 transition-transform duration-200"
-              />
-            </div>
+        {/* Header */}
+        <header className="border-b border-black/[0.08] dark:border-white/[0.08] backdrop-blur-2xl backdrop-saturate-150 bg-white/80 dark:bg-zinc-900/80 px-8 py-3 flex items-center justify-between sticky top-0 z-50 shadow-[0_1px_0_rgba(0,0,0,0.05)] dark:shadow-[0_1px_0_rgba(255,255,255,0.05)]">
+          <div className="flex items-center gap-3">
+            <img
+              src={logoUrl}
+              alt="EchoSmith logo"
+              className="h-8 w-8"
+            />
             <div>
-              <h1 className="text-lg font-semibold tracking-tight text-gray-900 dark:text-white">
+              <h1 className="text-base font-semibold tracking-tight text-gray-900 dark:text-white">
                 闻见 · EchoSmith
               </h1>
-              <p className="text-xs text-gray-500 dark:text-gray-400">
+              <p className="text-[11px] text-gray-500 dark:text-gray-400">
                 跨平台本地语音转写工作台
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
-            {/* macOS-style status indicator */}
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/[0.04] dark:bg-white/[0.06] border border-black/[0.06] dark:border-white/[0.06]" aria-live="polite">
-              <div className="relative">
-                <span className={`h-2 w-2 rounded-full ${healthIndicatorClass}`} aria-hidden="true" />
-                {/* Only show ping animation when loading or error */}
-                {(isHealthLoading || isHealthError || health?.status !== "ok") && (
-                  <span className={`absolute inset-0 h-2 w-2 rounded-full ${healthIndicatorClass} animate-ping opacity-75`} aria-hidden="true" />
-                )}
-              </div>
-              <span className="text-xs font-medium text-gray-700 dark:text-gray-300">{healthStatusText}</span>
-            </div>
-
-            {backendStatusLabel ? (
-              <div className="px-3 py-1.5 rounded-full bg-amber-500/10 dark:bg-amber-400/10 border border-amber-500/20 dark:border-amber-400/20 text-xs font-medium text-amber-700 dark:text-amber-300" aria-live="polite">
-                {backendStatusLabel}
-              </div>
-            ) : null}
-
-            <button
+          <div className="flex items-center gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              className={`gap-1.5 ${correctionActive ? "ring-1 ring-emerald-500/50 bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400" : ""}`}
               onClick={() => setShowSettings(!showSettings)}
-              className="p-2 rounded-lg hover:bg-black/[0.06] dark:hover:bg-white/[0.06] transition-colors"
-              title="设置"
             >
               <SettingsIcon className="h-4 w-4" />
-            </button>
+              {correctionActive ? "纠错已开启" : "纠错设置"}
+            </Button>
             <ThemeToggle theme={theme} onThemeChange={setTheme} />
           </div>
         </header>
 
-        {/* Enhanced Main Content */}
-        <main className="flex-1 grid lg:grid-cols-[440px_1fr] grid-rows-[1fr] gap-8 p-8 pb-4 min-h-0">
-          <section className="flex flex-col gap-4 animate-slide-in-left min-h-0">
-            {/* Tab switcher with pill indicator */}
+        {/* Main: left panel + right split */}
+        <main className="flex-1 grid lg:grid-cols-[380px_1fr] gap-6 p-6 pb-3 min-h-0">
+          {/* Left Column: Audio Source + Controls */}
+          <section className="flex flex-col gap-3 min-h-0 animate-slide-in-left">
+            {/* Tab switcher */}
             <div className="relative flex rounded-xl bg-black/[0.04] dark:bg-white/[0.06] p-1">
-              {/* Sliding pill background */}
               <div
                 className="absolute top-1 bottom-1 rounded-lg bg-white dark:bg-zinc-800 shadow-sm transition-transform duration-200 ease-out"
                 style={{
@@ -181,62 +128,40 @@ function AppShell(): JSX.Element {
                 </button>
               ))}
             </div>
-            <div className="flex-1 min-h-0 flex flex-col gap-4">
-              <div className="flex-1 min-h-0">
-                {leftTab === "batch" ? <BatchTaskComposer /> : <UrlTaskComposer />}
-              </div>
+
+            {/* Audio composer (shrunk) */}
+            <div className="flex-1 min-h-0 overflow-y-auto">
+              {leftTab === "batch" ? <BatchTaskComposer /> : <UrlTaskComposer />}
             </div>
+
           </section>
-          <section className="flex flex-col gap-6 animate-slide-in-right min-h-0">
-            <TaskStreamPanel />
+
+          {/* Right Column: ASR Results (top) + Correction Results (bottom) */}
+          <section className="flex flex-col gap-4 min-h-0 animate-slide-in-right">
+            {/* ASR Results */}
             <ResultPanel />
+
+            {/* Correction Results */}
+            <CorrectionPanel />
+
+            {/* Export buttons */}
           </section>
         </main>
 
         {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
       </div>
 
-      {/* Additional animations CSS */}
       <style>{`
-        @keyframes gradient {
-          0%, 100% { background-position: 0% 50%; }
-          50% { background-position: 100% 50%; }
-        }
-
-        .animate-gradient {
-          background-size: 200% 200%;
-          animation: gradient 3s ease infinite;
-        }
-
         @keyframes slide-in-left {
-          from {
-            opacity: 0;
-            transform: translateX(-20px);
-          }
-          to {
-            opacity: 1;
-            transform: translateX(0);
-          }
+          from { opacity: 0; transform: translateX(-20px); }
+          to { opacity: 1; transform: translateX(0); }
         }
-
         @keyframes slide-in-right {
-          from {
-            opacity: 0;
-            transform: translateX(20px);
-          }
-          to {
-            opacity: 1;
-            transform: translateX(0);
-          }
+          from { opacity: 0; transform: translateX(20px); }
+          to { opacity: 1; transform: translateX(0); }
         }
-
-        .animate-slide-in-left {
-          animation: slide-in-left 0.5s ease-out;
-        }
-
-        .animate-slide-in-right {
-          animation: slide-in-right 0.5s ease-out 0.1s both;
-        }
+        .animate-slide-in-left { animation: slide-in-left 0.5s ease-out; }
+        .animate-slide-in-right { animation: slide-in-right 0.5s ease-out 0.1s both; }
       `}</style>
     </AuroraBackground>
   );
