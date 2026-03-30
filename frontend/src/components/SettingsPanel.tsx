@@ -13,6 +13,7 @@ import {
 
 interface SettingsPanelProps {
   onClose: () => void;
+  onSaved?: (active: boolean) => void;
 }
 
 type CorrectionMode = "none" | "cloud_api";
@@ -26,7 +27,7 @@ const PROVIDER_DEFAULTS: Record<ApiProvider, { model: string; baseUrl: string }>
   custom: { model: "", baseUrl: "" },
 };
 
-export function SettingsPanel({ onClose }: SettingsPanelProps): JSX.Element {
+export function SettingsPanel({ onClose, onSaved }: SettingsPanelProps): JSX.Element {
   const [mode, setMode] = useState<CorrectionMode>("none");
   const [provider, setProvider] = useState<ApiProvider>("openai");
   const [apiKey, setApiKey] = useState("");
@@ -103,6 +104,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps): JSX.Element {
       setServerState({ mode: newMode, provider: c.api_provider, apiModel: c.api_model, apiBaseUrl: c.api_base_url, apiKeySet: c.api_key_set });
       setDirty(false);
       setSaved(true);
+      onSaved?.(newMode !== "none" && c.api_key_set);
       setTimeout(() => setSaved(false), 2000);
     } catch (err) {
       console.error("保存设置失败:", err);

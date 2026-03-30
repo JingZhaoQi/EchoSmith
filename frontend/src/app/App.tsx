@@ -148,7 +148,12 @@ function AppShell(): JSX.Element {
           </section>
         </main>
 
-        {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
+        {showSettings && (
+          <SettingsPanel
+            onClose={() => setShowSettings(false)}
+            onSaved={(active) => setCorrectionActive(active)}
+          />
+        )}
       </div>
 
       <style>{`
