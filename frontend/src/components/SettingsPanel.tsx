@@ -59,7 +59,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps): JSX.Element {
         setApiKeySet(c.api_key_set);
         setApiModel(c.api_model);
         setApiBaseUrl(c.api_base_url);
-        setUsage(s.api_usage);
+        setUsage(s.api_usage ?? { total_calls: 0, total_segments: 0, failed_calls: 0 });
         setServerState({ mode: m, provider: c.api_provider, apiModel: c.api_model, apiBaseUrl: c.api_base_url, apiKeySet: c.api_key_set });
       })
       .catch(console.error);
@@ -99,7 +99,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps): JSX.Element {
       setMode(newMode);
       setApiKeySet(c.api_key_set);
       setApiKey(c.api_key);
-      setUsage(result.api_usage);
+      setUsage(result.api_usage ?? { total_calls: 0, total_segments: 0, failed_calls: 0 });
       setServerState({ mode: newMode, provider: c.api_provider, apiModel: c.api_model, apiBaseUrl: c.api_base_url, apiKeySet: c.api_key_set });
       setDirty(false);
       setSaved(true);
