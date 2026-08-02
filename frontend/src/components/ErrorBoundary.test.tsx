@@ -35,9 +35,8 @@ describe('ErrorBoundary', () => {
       </ErrorBoundary>
     );
 
-    expect(screen.getByText('应用遇到错误')).toBeInTheDocument();
-    // Error message appears in multiple places, just check one exists
-    expect(screen.getAllByText(/Test error/).length).toBeGreaterThan(0);
+    expect(screen.getByText('应用出错了')).toBeInTheDocument();
+    expect(screen.getByText(/Test error/)).toBeInTheDocument();
   });
 
   it('should display error details', () => {
@@ -47,7 +46,7 @@ describe('ErrorBoundary', () => {
       </ErrorBoundary>
     );
 
-    expect(screen.getByText('查看详细信息')).toBeInTheDocument();
+    expect(screen.getByText('错误信息：', { exact: false })).toBeInTheDocument();
   });
 
   it('should render recovery buttons', () => {
@@ -57,7 +56,6 @@ describe('ErrorBoundary', () => {
       </ErrorBoundary>
     );
 
-    expect(screen.getByText('重新加载应用')).toBeInTheDocument();
-    expect(screen.getByText('尝试恢复')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '重新加载' })).toBeInTheDocument();
   });
 });

@@ -1,13 +1,12 @@
 // Realtime task progress stream.
 import { useMutation } from "@tanstack/react-query";
-import { PauseIcon, PlayIcon, Trash2Icon, StopCircleIcon, SkipForwardIcon, ChevronDownIcon } from "lucide-react";
+import { PauseIcon, PlayIcon, Trash2Icon, StopCircleIcon, SkipForwardIcon } from "lucide-react";
 
-import { Progress } from "./ui/progress";
-import { Card } from "./ui/card";
 import { Button } from "./ui/button";
 import { useTasksStore } from "../hooks/useTasksStore";
 import { cancelTask, pauseTask, resumeTask } from "../lib/api";
 import { STATUS_LABELS, getSourceLabel } from "../lib/constants";
+import { getClearableTaskIds, getStoppableTaskIds, isTerminalTask } from "./taskControls";
 
 export function TaskStreamPanel(): JSX.Element {
   const { tasks, activeTaskId, setActiveTask, removeTask, clearAllTasks, resetUserClearedFlag } = useTasksStore((state) => ({
@@ -24,8 +23,10 @@ export function TaskStreamPanel(): JSX.Element {
   // 直接从后端状态派生，不需要本地 state
   const currentStatus = activeTask?.status;
   const isPaused = currentStatus === "paused";
-  const isTerminal = currentStatus === "completed" || currentStatus === "failed" || currentStatus === "cancelled";
-  const progressPercent = Math.min(100, Math.max(0, Math.round((activeTask?.progress ?? 0) * 100)));
+  const isTerminal = isTerminalTask(activeTask);
+  const stoppableTaskIds = getStoppableTaskIds(tasks);
+  const clearableTaskIds = getClearableTaskIds(tasks);
+  const hasTasks = Object.keys(tasks).length > 0;
 
   const pauseMutation = useMutation({
     mutationFn: async () => {
@@ -44,7 +45,7 @@ export function TaskStreamPanel(): JSX.Element {
   const cancelMutation = useMutation({
     mutationFn: async () => {
       if (!activeTaskId) {
-        throw new Error("没有任务可清空");
+        throw new Error("没有任务可跳过");
       }
       const taskToRemove = activeTaskId;
 
@@ -65,23 +66,21 @@ export function TaskStreamPanel(): JSX.Element {
 
       removeTask(taskToRemove);
 
-      // 清空后，取消选中任务
+      // 跳过后，取消选中任务
       setActiveTask(null);
     },
     onError: () => {
-      window.alert("清空任务失败，请稍后再试");
+      window.alert("跳过任务失败，请稍后再试");
     }
   });
 
   const stopAllMutation = useMutation({
     mutationFn: async () => {
-      const allTaskIds = Object.keys(tasks);
-      if (allTaskIds.length === 0) {
+      if (stoppableTaskIds.length === 0) {
         throw new Error("没有任务可停止");
       }
 
-      // 尝试取消所有任务
-      for (const taskId of allTaskIds) {
+      for (const taskId of stoppableTaskIds) {
         try {
           await cancelTask(taskId);
         } catch (error: unknown) {
@@ -95,33 +94,31 @@ export function TaskStreamPanel(): JSX.Element {
           }
         }
       }
-
-      // 一次性清空所有任务
-      clearAllTasks();
-
-      // 等待后端处理完成后，重置标志以允许后续更新
-      setTimeout(() => {
-        resetUserClearedFlag();
-      }, 5000); // 5秒后重置标志
     },
     onError: () => {
       window.alert("停止所有任务失败，请稍后再试");
-      resetUserClearedFlag(); // 出错时也重置标志
     }
   });
 
   const clearAllMutation = useMutation({
     mutationFn: async () => {
-      // 触发全局清空事件
+      const taskIds = clearableTaskIds;
       window.dispatchEvent(new CustomEvent("clearAllFiles"));
-
-      // 也清空任务列表
       clearAllTasks();
 
-      // 重置标志
-      setTimeout(() => {
-        resetUserClearedFlag();
-      }, 1000);
+      for (const taskId of taskIds) {
+        try {
+          await cancelTask(taskId);
+        } catch (error: unknown) {
+          const status =
+            typeof error === "object" && error !== null && "response" in error
+              ? (error as { response?: { status?: number } }).response?.status
+              : undefined;
+          if (status !== 404) {
+            console.error(`Failed to cancel task ${taskId}:`, error);
+          }
+        }
+      }
     },
     onError: () => {
       window.alert("清空失败，请稍后再试");
@@ -130,100 +127,73 @@ export function TaskStreamPanel(): JSX.Element {
   });
 
   return (
-    <div>
-      <Card className="space-y-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-sm font-semibold">任务状态</h2>
-            <p className={`text-xs ${
-              currentStatus === "completed" ? "text-emerald-600 dark:text-emerald-400 font-medium" :
-              currentStatus === "failed" ? "text-red-600 dark:text-red-400 font-medium" :
-              "text-muted-foreground"
-            }`}>
-              {activeTask ? `当前：${STATUS_LABELS[currentStatus ?? ""] ?? currentStatus ?? "未知"}` : "暂无任务"}
-            </p>
-          </div>
-          <div className="relative">
-            <select
-              className="appearance-none text-xs rounded-lg border border-border bg-muted/50 pl-2.5 pr-7 py-1.5 max-w-[200px] truncate cursor-pointer hover:bg-muted transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
-              value={activeTaskId ?? ""}
-              onChange={(event) => setActiveTask(event.target.value || null)}
-            >
-              <option value="">选择任务</option>
-              {Object.values(tasks)
-                .sort((a, b) => b.created_at - a.created_at)
-                .map((task) => (
-                  <option key={task.id} value={task.id}>
-                    {getSourceLabel(task.source) || task.id.slice(0, 8)} · {STATUS_LABELS[task.status] ?? task.status}
-                  </option>
-                ))}
-            </select>
-            <ChevronDownIcon className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-          </div>
-        </div>
-        <div className="flex items-center gap-3">
-          <div className="flex-1">
-            <Progress
-              value={progressPercent}
-              variant={currentStatus === "completed" ? "success" : currentStatus === "failed" ? "error" : "default"}
-              animated={!isTerminal && !isPaused && progressPercent > 0}
-            />
-          </div>
-          <span className={`w-12 text-xs text-right ${
-            currentStatus === "completed" ? "text-emerald-600 dark:text-emerald-400 font-medium" :
-            currentStatus === "failed" ? "text-red-600 dark:text-red-400 font-medium" :
-            "text-muted-foreground"
-          }`}>{progressPercent}%</span>
-        </div>
-        <div className="flex items-center gap-1">
-          <Button
-            variant="ghost"
-            size="icon"
-            data-tip="暂停"
-            disabled={!activeTaskId || isPaused || isTerminal || pauseMutation.isPending}
-            onClick={() => pauseMutation.mutate()}
-          >
-            <PauseIcon className="h-4 w-4" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            data-tip="继续"
-            disabled={!activeTaskId || !isPaused || isTerminal || resumeMutation.isPending}
-            onClick={() => resumeMutation.mutate()}
-          >
-            <PlayIcon className="h-4 w-4" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            data-tip="跳过"
-            disabled={!activeTaskId || cancelMutation.isPending}
-            onClick={() => cancelMutation.mutate()}
-          >
-            <SkipForwardIcon className="h-4 w-4" />
-          </Button>
-          <div className="mx-1 h-4 border-r border-border" />
-          <Button
-            variant="ghost"
-            size="icon"
-            data-tip="全部停止"
-            disabled={Object.keys(tasks).length === 0 || stopAllMutation.isPending}
-            onClick={() => stopAllMutation.mutate()}
-          >
-            <StopCircleIcon className="h-4 w-4" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            data-tip="清空"
-            disabled={clearAllMutation.isPending}
-            onClick={() => clearAllMutation.mutate()}
-          >
-            <Trash2Icon className="h-4 w-4" />
-          </Button>
-        </div>
-      </Card>
+    <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-slate-900/10 pt-3 dark:border-white/[0.08]">
+      <div className="flex items-center gap-1">
+        <Button
+          variant="ghost"
+          size="icon"
+          data-tip="暂停"
+          title="暂停"
+          aria-label="暂停"
+          className="h-9 w-9 rounded-2xl"
+          disabled={!activeTaskId || isPaused || isTerminal || pauseMutation.isPending}
+          onClick={() => pauseMutation.mutate()}
+        >
+          <PauseIcon className="h-4 w-4" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          data-tip="继续"
+          title="继续"
+          aria-label="继续"
+          className="h-9 w-9 rounded-2xl"
+          disabled={!activeTaskId || !isPaused || isTerminal || resumeMutation.isPending}
+          onClick={() => resumeMutation.mutate()}
+        >
+          <PlayIcon className="h-4 w-4" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          data-tip="跳过"
+          title="跳过"
+          aria-label="跳过"
+          className="h-9 w-9 rounded-2xl"
+          disabled={!activeTaskId || isTerminal || cancelMutation.isPending}
+          onClick={() => cancelMutation.mutate()}
+        >
+          <SkipForwardIcon className="h-4 w-4" />
+        </Button>
+        <div className="mx-1 h-4 border-r border-border" />
+        <Button
+          variant="ghost"
+          size="icon"
+          data-tip="全部停止"
+          title="全部停止"
+          aria-label="全部停止"
+          className="h-9 w-9 rounded-2xl"
+          disabled={stoppableTaskIds.length === 0 || stopAllMutation.isPending}
+          onClick={() => stopAllMutation.mutate()}
+        >
+          <StopCircleIcon className="h-4 w-4" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          data-tip="清空"
+          title="清空"
+          aria-label="清空"
+          className="h-9 w-9 rounded-2xl"
+          disabled={!hasTasks || clearAllMutation.isPending}
+          onClick={() => clearAllMutation.mutate()}
+        >
+          <Trash2Icon className="h-4 w-4" />
+        </Button>
+      </div>
+      <span className="status-pill max-w-[220px] truncate">
+        {activeTask ? `${getSourceLabel(activeTask.source, 24) || activeTask.id.slice(0, 8)} · ${STATUS_LABELS[activeTask.status] ?? activeTask.status}` : "未选择任务"}
+      </span>
     </div>
   );
 }

@@ -34,6 +34,7 @@ export function BatchTaskComposer(): JSX.Element {
 
   const upsertTask = useTasksStore((state) => state.upsertTask);
   const setActiveTask = useTasksStore((state) => state.setActiveTask);
+  const resetUserClearedFlag = useTasksStore((state) => state.resetUserClearedFlag);
 
   // Drag and drop handlers
   const handleDragOver = (e: React.DragEvent) => {
@@ -352,6 +353,7 @@ export function BatchTaskComposer(): JSX.Element {
     event.preventDefault();
     if (batchFiles.length === 0) return;
     if (exportFormats.size === 0) return;
+    resetUserClearedFlag();
     mutation.mutate();
   };
 
@@ -368,19 +370,19 @@ export function BatchTaskComposer(): JSX.Element {
 
   return (
     <form
-      className="rounded-[20px] border border-black/[0.08] dark:border-white/[0.08] bg-white/90 dark:bg-zinc-900/90 backdrop-blur-2xl backdrop-saturate-150 shadow-[0_1px_2px_rgba(0,0,0,0.05),0_8px_16px_rgba(0,0,0,0.08)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.3),0_8px_24px_rgba(0,0,0,0.4)] hover:shadow-[0_1px_2px_rgba(0,0,0,0.05),0_12px_24px_rgba(0,0,0,0.12)] dark:hover:shadow-[0_1px_2px_rgba(0,0,0,0.3),0_12px_32px_rgba(0,0,0,0.5)] transition-all duration-300 ease-out p-6 flex flex-col gap-5 h-full min-h-[420px]"
+      className="liquid-panel flex h-full min-h-[360px] flex-col gap-5 overflow-y-auto p-5"
       onSubmit={handleSubmit}
     >
       <div>
-        <h2 className="text-base font-semibold">批量转写</h2>
-        <p className="text-xs text-muted-foreground mt-1">
+        <h2 className="text-base font-semibold text-slate-950 dark:text-white">本地媒体批量处理</h2>
+        <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
           选择多个音视频文件，自动转写并保存到源文件目录
         </p>
       </div>
 
       {/* Export format selection */}
       <div>
-        <label className="text-sm font-medium text-gray-900 dark:text-white mb-2 block">
+        <label className="mb-2 block text-sm font-medium text-slate-900 dark:text-white">
           导出格式
         </label>
         <div className="flex gap-2">
@@ -391,8 +393,8 @@ export function BatchTaskComposer(): JSX.Element {
               onClick={() => toggleFormat(format)}
               className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
                 exportFormats.has(format)
-                  ? "bg-indigo-500 text-white shadow-sm"
-                  : "bg-black/[0.04] dark:bg-white/[0.06] text-gray-700 dark:text-gray-300 hover:bg-black/[0.08] dark:hover:bg-white/[0.12]"
+                  ? "bg-slate-950 text-white shadow-sm dark:bg-white dark:text-slate-950"
+                  : "glass-field text-slate-700 hover:bg-white/70 dark:text-slate-300 dark:hover:bg-white/[0.10]"
               }`}
             >
               {format.toUpperCase()}
@@ -406,8 +408,8 @@ export function BatchTaskComposer(): JSX.Element {
         <div
           className={`flex flex-col items-center justify-center rounded-[16px] border-2 border-dashed transition-all duration-200 px-5 py-8 text-center cursor-pointer group ${
             isDragging
-              ? "border-indigo-400 bg-indigo-50/50 dark:bg-indigo-400/10"
-              : "border-black/15 dark:border-white/15 bg-black/[0.02] dark:bg-white/[0.02] hover:bg-black/[0.04] dark:hover:bg-white/[0.04] hover:border-black/25 dark:hover:border-white/25"
+              ? "border-sky-400 bg-sky-50/60 dark:bg-sky-400/10"
+              : "border-slate-300/80 bg-white/35 hover:border-slate-400/70 hover:bg-white/55 dark:border-white/[0.12] dark:bg-white/[0.04] dark:hover:bg-white/[0.07]"
           }`}
           onClick={handleFileSelect}
           onDragOver={handleDragOver}
@@ -423,18 +425,18 @@ export function BatchTaskComposer(): JSX.Element {
         >
           <div className={`mb-4 p-3 rounded-full transition-colors ${
             isDragging
-              ? "bg-indigo-500/20 dark:bg-indigo-400/20"
-              : "bg-indigo-500/10 dark:bg-indigo-400/10 group-hover:bg-indigo-500/15 dark:group-hover:bg-indigo-400/15"
+              ? "bg-sky-500/20 dark:bg-sky-400/20"
+              : "bg-sky-500/10 dark:bg-sky-400/10 group-hover:bg-sky-500/15 dark:group-hover:bg-sky-400/15"
           }`}>
             <UploadIcon
-              className="h-8 w-8 text-indigo-600 dark:text-indigo-400"
+              className="h-8 w-8 text-sky-700 dark:text-sky-300"
               strokeWidth={2.5}
             />
           </div>
-          <p className="text-sm font-semibold text-gray-900 dark:text-white mb-1">
+          <p className="mb-1 text-sm font-semibold text-slate-950 dark:text-white">
             {isDragging ? "松开以添加文件" : "点击选择或拖拽文件到此处"}
           </p>
-          <p className="text-xs text-gray-500 dark:text-gray-400">
+          <p className="text-xs text-slate-500 dark:text-slate-400">
             支持 MP3 / WAV / M4A / MP4 / MOV 等常见格式
           </p>
         </div>
@@ -445,7 +447,7 @@ export function BatchTaskComposer(): JSX.Element {
             {batchFiles.map((batchFile, index) => (
               <div
                 key={index}
-                className="flex items-center justify-between gap-3 rounded-xl border border-black/[0.08] dark:border-white/[0.08] bg-white/60 dark:bg-zinc-800/60 px-3 py-2 text-sm"
+                className="glass-field flex items-center justify-between gap-3 rounded-2xl px-3 py-2 text-sm"
               >
                 <div className="flex items-center gap-2 min-w-0 flex-1">
                   {batchFile.status === "completed" ? (
@@ -453,7 +455,7 @@ export function BatchTaskComposer(): JSX.Element {
                   ) : batchFile.status === "failed" ? (
                     <XIcon className="h-4 w-4 text-red-500 flex-shrink-0" />
                   ) : batchFile.status === "processing" ? (
-                    <div className="h-4 w-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin flex-shrink-0" />
+                    <div className="h-4 w-4 flex-shrink-0 animate-spin rounded-full border-2 border-sky-500 border-t-transparent" />
                   ) : (
                     <FileAudioIcon className="h-4 w-4 text-gray-400 flex-shrink-0" />
                   )}
@@ -465,7 +467,7 @@ export function BatchTaskComposer(): JSX.Element {
                   <button
                     type="button"
                     onClick={() => handleRemoveFile(index)}
-                    className="p-1 rounded hover:bg-black/[0.08] dark:hover:bg-white/[0.12] transition-colors"
+                    className="rounded-lg p-1 transition-colors hover:bg-black/[0.08] dark:hover:bg-white/[0.12]"
                   >
                     <XIcon className="h-4 w-4 text-gray-500" />
                   </button>
@@ -505,6 +507,7 @@ export function BatchTaskComposer(): JSX.Element {
           {(mutation.error as Error).message || "批量处理失败"}
         </p>
       )}
+
     </form>
   );
 }

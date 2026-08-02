@@ -44,6 +44,113 @@
 
 body {
   @apply bg-background text-foreground antialiased;
+  font-feature-settings: "rlig" 1, "calt" 1;
+}
+
+@layer components {
+  .app-material-bg {
+    background:
+      linear-gradient(135deg, rgba(244, 247, 251, 0.96) 0%, rgba(226, 232, 240, 0.72) 46%, rgba(240, 249, 250, 0.92) 100%),
+      linear-gradient(90deg, rgba(56, 189, 248, 0.08), rgba(20, 184, 166, 0.08), rgba(245, 158, 11, 0.05));
+  }
+
+  .dark .app-material-bg {
+    background:
+      linear-gradient(135deg, rgba(9, 12, 18, 0.98) 0%, rgba(24, 30, 42, 0.94) 52%, rgba(11, 24, 31, 0.96) 100%),
+      linear-gradient(90deg, rgba(56, 189, 248, 0.10), rgba(20, 184, 166, 0.09), rgba(245, 158, 11, 0.05));
+  }
+
+  .glass-toolbar {
+    background: rgba(255, 255, 255, 0.70);
+    -webkit-backdrop-filter: blur(24px) saturate(1.55);
+    backdrop-filter: blur(24px) saturate(1.55);
+    border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.72), 0 10px 30px rgba(15, 23, 42, 0.08);
+  }
+
+  .dark .glass-toolbar {
+    background: rgba(14, 18, 27, 0.72);
+    border-bottom-color: rgba(255, 255, 255, 0.09);
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.06), 0 16px 36px rgba(0, 0, 0, 0.28);
+  }
+
+  .glass-sidebar,
+  .glass-panel,
+  .liquid-panel {
+    -webkit-backdrop-filter: blur(26px) saturate(1.45);
+    backdrop-filter: blur(26px) saturate(1.45);
+    box-shadow:
+      0 18px 46px rgba(15, 23, 42, 0.10),
+      inset 0 1px 0 rgba(255, 255, 255, 0.65);
+  }
+
+  .glass-sidebar {
+    background: rgba(255, 255, 255, 0.58);
+    border: 1px solid rgba(255, 255, 255, 0.62);
+  }
+
+  .glass-panel,
+  .liquid-panel {
+    background: rgba(255, 255, 255, 0.66);
+    border: 1px solid rgba(255, 255, 255, 0.68);
+  }
+
+  .dark .glass-sidebar,
+  .dark .glass-panel,
+  .dark .liquid-panel {
+    background: rgba(18, 23, 34, 0.70);
+    border-color: rgba(255, 255, 255, 0.10);
+    box-shadow:
+      0 22px 54px rgba(0, 0, 0, 0.34),
+      inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  }
+
+  .liquid-panel {
+    border-radius: 22px;
+  }
+
+  .glass-field {
+    background: rgba(255, 255, 255, 0.58);
+    border: 1px solid rgba(15, 23, 42, 0.10);
+    -webkit-backdrop-filter: blur(18px) saturate(1.35);
+    backdrop-filter: blur(18px) saturate(1.35);
+  }
+
+  .dark .glass-field {
+    background: rgba(255, 255, 255, 0.07);
+    border-color: rgba(255, 255, 255, 0.10);
+  }
+
+  .status-pill {
+    @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium;
+    background: rgba(15, 23, 42, 0.06);
+    color: rgba(51, 65, 85, 0.96);
+  }
+
+  .dark .status-pill {
+    background: rgba(255, 255, 255, 0.08);
+    color: rgba(226, 232, 240, 0.94);
+  }
+
+  .status-pill-success {
+    background: rgba(16, 185, 129, 0.13);
+    color: rgb(4, 120, 87);
+  }
+
+  .dark .status-pill-success {
+    background: rgba(16, 185, 129, 0.16);
+    color: rgb(110, 231, 183);
+  }
+
+  .status-pill-danger {
+    background: rgba(239, 68, 68, 0.12);
+    color: rgb(185, 28, 28);
+  }
+
+  .dark .status-pill-danger {
+    background: rgba(248, 113, 113, 0.14);
+    color: rgb(252, 165, 165);
+  }
 }
 
 /* Instant CSS tooltip via data-tip */

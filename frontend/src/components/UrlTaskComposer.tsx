@@ -9,6 +9,7 @@ import {
   Music2Icon,
   CheckCircle2Icon,
   DownloadIcon,
+  BadgeCheckIcon,
 } from "lucide-react";
 
 import { Button } from "./ui/button";
@@ -18,6 +19,24 @@ import { useTasksStore } from "../hooks/useTasksStore";
 function extractUrl(text: string): string {
   const m = text.match(/https?:\/\/[^\s<>"']+/);
   return m ? m[0].replace(/[,.;:!?。，；：！？]+$/, "") : text.trim();
+}
+
+function detectPlatform(text: string): { name: string; hint: string } {
+  const value = text.toLowerCase();
+  if (!value.trim()) return { name: "等待链接", hint: "支持粘贴完整分享文本" };
+  if (value.includes("bilibili.com") || value.includes("b23.tv")) {
+    return { name: "Bilibili", hint: "已启用 B 站请求头、超时和重试策略" };
+  }
+  if (value.includes("youtube.com") || value.includes("youtu.be")) {
+    return { name: "YouTube", hint: "如需登录视频，请先在浏览器登录" };
+  }
+  if (value.includes("douyin.com") || value.includes("iesdouyin.com")) {
+    return { name: "抖音", hint: "会自动解析分享文本中的短链接" };
+  }
+  if (value.includes("x.com") || value.includes("twitter.com")) {
+    return { name: "Twitter/X", hint: "公开媒体可直接下载，受限媒体需要登录状态" };
+  }
+  return { name: "通用视频链接", hint: "由 yt-dlp 自动识别平台" };
 }
 
 export function UrlTaskComposer(): JSX.Element {
@@ -101,15 +120,16 @@ export function UrlTaskComposer(): JSX.Element {
 
   const canStart = url.trim().length > 0 && !mutation.isPending;
   const canDownload = url.trim().length > 0 && !dlMutation.isPending;
+  const platform = detectPlatform(url);
 
   return (
     <form
-      className="rounded-[20px] border border-black/[0.08] dark:border-white/[0.08] bg-white/90 dark:bg-zinc-900/90 backdrop-blur-2xl backdrop-saturate-150 shadow-[0_1px_2px_rgba(0,0,0,0.05),0_8px_16px_rgba(0,0,0,0.08)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.3),0_8px_24px_rgba(0,0,0,0.4)] hover:shadow-[0_1px_2px_rgba(0,0,0,0.05),0_12px_24px_rgba(0,0,0,0.12)] dark:hover:shadow-[0_1px_2px_rgba(0,0,0,0.3),0_12px_32px_rgba(0,0,0,0.5)] transition-all duration-300 ease-out p-6 flex flex-col gap-5 h-full min-h-[420px]"
+      className="liquid-panel flex h-full min-h-[360px] flex-col gap-5 overflow-y-auto p-5"
       onSubmit={handleSubmit}
     >
       <div>
-        <h2 className="text-base font-semibold">在线视频转写</h2>
-        <p className="text-xs text-muted-foreground mt-1">
+        <h2 className="text-base font-semibold text-slate-950 dark:text-white">在线视频采集</h2>
+        <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
           粘贴视频链接，自动下载音频并转写为文字
         </p>
       </div>
@@ -117,7 +137,7 @@ export function UrlTaskComposer(): JSX.Element {
       {/* URL input */}
       <div className="flex flex-col gap-4">
         <div>
-          <label className="text-sm font-medium text-gray-900 dark:text-white mb-2 block">
+          <label className="mb-2 block text-sm font-medium text-slate-900 dark:text-white">
             视频链接
           </label>
           <div className="flex gap-2">
@@ -128,13 +148,13 @@ export function UrlTaskComposer(): JSX.Element {
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
                 placeholder="粘贴视频链接或分享文本…"
-                className="w-full pl-9 pr-3 py-2.5 rounded-xl border border-black/[0.08] dark:border-white/[0.08] bg-white/60 dark:bg-zinc-800/60 text-sm placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500/50 transition-all"
+                className="glass-field w-full rounded-2xl py-2.5 pl-9 pr-3 text-sm placeholder:text-slate-400 transition-all focus:outline-none focus:ring-2 focus:ring-sky-500/30 dark:placeholder:text-slate-500"
               />
             </div>
             <button
               type="button"
               onClick={handlePaste}
-              className="px-3 py-2.5 rounded-xl border border-black/[0.08] dark:border-white/[0.08] bg-black/[0.04] dark:bg-white/[0.06] hover:bg-black/[0.08] dark:hover:bg-white/[0.12] transition-colors text-gray-600 dark:text-gray-300"
+              className="glass-field rounded-2xl px-3 py-2.5 text-slate-600 transition-colors hover:bg-white/70 dark:text-slate-300 dark:hover:bg-white/[0.10]"
               title="从剪贴板粘贴"
             >
               <ClipboardPasteIcon className="h-4 w-4" />
@@ -143,17 +163,27 @@ export function UrlTaskComposer(): JSX.Element {
         </div>
 
         {/* Supported platforms hint */}
-        <div className="rounded-xl border border-black/[0.04] dark:border-white/[0.04] bg-black/[0.02] dark:bg-white/[0.02] px-4 py-3">
-          <p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed">
-            支持 YouTube、Bilibili、Twitter/X、抖音等 1000+ 平台。粘贴视频页面链接即可，应用会自动下载音频并转写。
-          </p>
+        <div className="glass-field rounded-2xl px-4 py-3">
+          <div className="flex items-start gap-3">
+            <span className="mt-0.5 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-xl bg-emerald-500/12 text-emerald-700 dark:text-emerald-300">
+              <BadgeCheckIcon className="h-4 w-4" />
+            </span>
+            <div className="min-w-0">
+              <div className="text-xs font-semibold text-slate-800 dark:text-slate-100">
+                {platform.name}
+              </div>
+              <p className="mt-0.5 text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+                {platform.hint}
+              </p>
+            </div>
+          </div>
         </div>
 
         {/* Progress hints */}
         {mutation.isPending && (
-          <div className="flex items-center gap-2 px-4 py-3 rounded-xl bg-indigo-500/5 dark:bg-indigo-400/5 border border-indigo-500/10 dark:border-indigo-400/10">
-            <div className="h-4 w-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin flex-shrink-0" />
-            <p className="text-xs text-indigo-700 dark:text-indigo-300">
+          <div className="flex items-center gap-2 rounded-2xl border border-sky-500/10 bg-sky-500/5 px-4 py-3 dark:bg-sky-400/5">
+            <div className="h-4 w-4 flex-shrink-0 animate-spin rounded-full border-2 border-sky-500 border-t-transparent" />
+            <p className="text-xs text-sky-700 dark:text-sky-300">
               正在创建任务，请在右侧面板查看进度…
             </p>
           </div>
@@ -161,7 +191,7 @@ export function UrlTaskComposer(): JSX.Element {
 
         {/* Download progress bar */}
         {dlMutation.isPending && dlProgress && (
-          <div className="px-4 py-3 rounded-xl bg-emerald-500/5 dark:bg-emerald-400/5 border border-emerald-500/10 dark:border-emerald-400/10">
+          <div className="rounded-2xl border border-emerald-500/10 bg-emerald-500/5 px-4 py-3 dark:bg-emerald-400/5">
             <div className="flex items-center gap-2 mb-2">
               <DownloadIcon className="h-4 w-4 text-emerald-600 dark:text-emerald-400 flex-shrink-0" />
               <p className="text-xs text-emerald-700 dark:text-emerald-300 flex-1">
