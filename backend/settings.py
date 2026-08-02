@@ -6,6 +6,19 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 
+VALID_ACCURACY_MODES = {"fast", "balanced", "accurate"}
+VALID_DOMAIN_PROFILES = {"general", "sermon", "academic", "meeting", "tech"}
+VALID_ASR_MODELS = {
+    "sensevoice-sherpa-2024",
+    "qwen3-asr-0.6b",
+    "qwen3-asr-1.7b",
+    "funasr-sensevoice-small",
+    "funasr-paraformer-zh",
+    "funasr-nano",
+}
+DEFAULT_ASR_MODEL = "sensevoice-sherpa-2024"
+
+
 @dataclass
 class CorrectionConfig:
     mode: str = "none"  # "none" | "local_3b" | "cloud_api"
@@ -13,6 +26,13 @@ class CorrectionConfig:
     api_key: str = ""
     api_model: str = "gpt-4o-mini"
     api_base_url: str = ""
+
+
+@dataclass
+class TranscriptionConfig:
+    accuracy_mode: str = "balanced"
+    domain_profile: str = "general"
+    asr_model: str = DEFAULT_ASR_MODEL
 
 
 @dataclass
@@ -24,6 +44,7 @@ class ApiUsageStats:
 
 @dataclass
 class AppSettings:
+    transcription: TranscriptionConfig = field(default_factory=TranscriptionConfig)
     correction: CorrectionConfig = field(default_factory=CorrectionConfig)
     api_usage: ApiUsageStats = field(default_factory=ApiUsageStats)
 
@@ -39,6 +60,18 @@ class SettingsManager:
             return
         try:
             data = json.loads(self._path.read_text(encoding="utf-8"))
+            transcription_data = data.get("transcription", {})
+            self._settings.transcription = TranscriptionConfig(
+                accuracy_mode=self._sanitize_accuracy_mode(
+                    transcription_data.get("accuracy_mode", "balanced")
+                ),
+                domain_profile=self._sanitize_domain_profile(
+                    transcription_data.get("domain_profile", "general")
+                ),
+                asr_model=self._sanitize_asr_model(
+                    transcription_data.get("asr_model", DEFAULT_ASR_MODEL)
+                ),
+            )
             correction_data = data.get("correction", {})
             self._settings.correction = CorrectionConfig(
                 mode=correction_data.get("mode", "none"),
@@ -65,6 +98,22 @@ class SettingsManager:
 
     def get(self) -> AppSettings:
         return self._settings
+
+    def update_transcription(self, **kwargs) -> TranscriptionConfig:
+        if "accuracy_mode" in kwargs:
+            self._settings.transcription.accuracy_mode = self._sanitize_accuracy_mode(
+                kwargs["accuracy_mode"]
+            )
+        if "domain_profile" in kwargs:
+            self._settings.transcription.domain_profile = self._sanitize_domain_profile(
+                kwargs["domain_profile"]
+            )
+        if "asr_model" in kwargs:
+            self._settings.transcription.asr_model = self._sanitize_asr_model(
+                kwargs["asr_model"]
+            )
+        self.save()
+        return self._settings.transcription
 
     def update_correction(self, **kwargs) -> CorrectionConfig:
         for key, value in kwargs.items():
@@ -94,3 +143,15 @@ class SettingsManager:
         else:
             data["correction"]["api_key_set"] = False
         return data
+
+    @staticmethod
+    def _sanitize_accuracy_mode(value: object) -> str:
+        return value if isinstance(value, str) and value in VALID_ACCURACY_MODES else "balanced"
+
+    @staticmethod
+    def _sanitize_domain_profile(value: object) -> str:
+        return value if isinstance(value, str) and value in VALID_DOMAIN_PROFILES else "general"
+
+    @staticmethod
+    def _sanitize_asr_model(value: object) -> str:
+        return value if isinstance(value, str) and value in VALID_ASR_MODELS else DEFAULT_ASR_MODEL

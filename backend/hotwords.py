@@ -15,7 +15,7 @@ class HotwordManager:
 
     def load(self) -> None:
         if not self._path.exists():
-            self._words = []
+            self._load_defaults()
             return
         try:
             data = json.loads(self._path.read_text(encoding="utf-8"))
@@ -46,3 +46,14 @@ class HotwordManager:
 
     def list_all(self) -> list[str]:
         return list(self._words)
+
+    def _load_defaults(self) -> None:
+        """Load built-in default hotwords on first run."""
+        defaults_file = Path(__file__).parent / "default_hotwords.json"
+        if defaults_file.exists():
+            try:
+                data = json.loads(defaults_file.read_text(encoding="utf-8"))
+                self._words = list(data.get("words", []))
+                self.save()
+            except (json.JSONDecodeError, KeyError):
+                self._words = []

@@ -13,6 +13,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import (
+    BackgroundTasks,
     Depends,
     FastAPI,
     File,
@@ -31,6 +32,7 @@ try:
     from correction_engine import CorrectionEngine
     from hotwords import HotwordManager
     from settings import SettingsManager
+    from asr_models import ASRModelManager
     from task_store import TaskRecord, TaskStatus, task_store
     from url_downloader import (
         download_audio,
@@ -43,6 +45,7 @@ except ImportError:
     from .correction_engine import CorrectionEngine
     from .hotwords import HotwordManager
     from .settings import SettingsManager
+    from .asr_models import ASRModelManager
     from .task_store import TaskRecord, TaskStatus, task_store
     from .url_downloader import (
         download_audio,
@@ -73,6 +76,8 @@ app.add_middleware(
 
 UPLOAD_ROOT = Path(tempfile.gettempdir()) / "echosmith_uploads"
 UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
+SRT_MAX_CHARS_PER_CUE = 40
+SRT_MAX_CHARS_PER_LINE = 20
 
 
 def _get_hotwords_path() -> Path:
@@ -87,10 +92,13 @@ def _get_hotwords_path() -> Path:
 
 hotword_manager = HotwordManager(_get_hotwords_path())
 settings_manager = SettingsManager(_get_hotwords_path().parent / "settings.json")
+asr_model_manager = ASRModelManager()
+ASR_DOWNLOADS: dict[str, dict] = {}
 
 
 def _build_correction_engine() -> CorrectionEngine | None:
-    cfg = settings_manager.get().correction
+    settings = settings_manager.get()
+    cfg = settings.correction
     if cfg.mode == "none":
         return None
     return CorrectionEngine(
@@ -101,11 +109,19 @@ def _build_correction_engine() -> CorrectionEngine | None:
         api_model=cfg.api_model,
         api_base_url=cfg.api_base_url,
         on_api_call=lambda segs, failed: settings_manager.record_api_call(segs, failed),
+        accuracy_mode=settings.transcription.accuracy_mode,
+        domain_profile=settings.transcription.domain_profile,
     )
 
 
 _correction_engine = _build_correction_engine()
-engine = ASREngine(correction_engine=_correction_engine)
+_settings = settings_manager.get()
+engine = ASREngine(
+    correction_engine=_correction_engine,
+    accuracy_mode=_settings.transcription.accuracy_mode,
+    domain_profile=_settings.transcription.domain_profile,
+    asr_model=_settings.transcription.asr_model,
+)
 API_TOKEN = os.environ.get("ECHOSMITH_TOKEN")
 UPLOAD_FILE_REQUIRED = File(...)
 LANGUAGE_FORM_FIELD = Form(default="zh")
@@ -149,6 +165,7 @@ async def healthcheck() -> JSONResponse:
             "model_cache_dir": model_cache_dir,
             "ytdlp": ytdlp_ok,
             "correction_mode": settings_manager.get().correction.mode,
+            "asr_model": settings_manager.get().transcription.asr_model,
             "status": "ok" if ffmpeg_ok else "degraded",
             "debug": debug_info,
         }
@@ -224,6 +241,10 @@ async def get_settings(_: None = Depends(verify_token)) -> JSONResponse:
 async def update_settings(request: Request, _: None = Depends(verify_token)) -> JSONResponse:
     global _correction_engine
     body = await request.json()
+    transcription = body.get("transcription", {})
+    if transcription:
+        settings_manager.update_transcription(**transcription)
+
     correction = body.get("correction", {})
     if correction:
         # If api_key is masked placeholder, keep the existing key
@@ -234,6 +255,12 @@ async def update_settings(request: Request, _: None = Depends(verify_token)) -> 
     # Rebuild correction engine with new settings
     _correction_engine = _build_correction_engine()
     engine._correction_engine = _correction_engine
+    latest = settings_manager.get().transcription
+    engine.set_transcription_options(
+        latest.accuracy_mode,
+        latest.domain_profile,
+        latest.asr_model,
+    )
 
     return JSONResponse(settings_manager.snapshot())
 
@@ -242,6 +269,114 @@ async def update_settings(request: Request, _: None = Depends(verify_token)) -> 
 async def reset_usage(_: None = Depends(verify_token)) -> JSONResponse:
     settings_manager.reset_usage()
     return JSONResponse(settings_manager.snapshot())
+
+
+@app.get("/api/models/asr")
+@app.get("/api/asr-models")
+@app.get("/api/asr/models")
+async def list_asr_models(_: None = Depends(verify_token)) -> JSONResponse:
+    selected = settings_manager.get().transcription.asr_model
+    models = asr_model_manager.list_models(selected_model_id=selected)
+    for model in models:
+        state = ASR_DOWNLOADS.get(model["id"])
+        model["downloading"] = bool(state and state.get("status") == "running")
+        size_progress = 0.0
+        estimated_size = float(model.get("estimated_size_bytes") or 0)
+        local_size = float(model.get("installed_size_bytes") or 0)
+        if estimated_size > 0 and local_size > 0:
+            size_progress = min(local_size / estimated_size, 0.99)
+        state_progress = float(state.get("progress", 0.0)) if state else 0.0
+        model["download_progress"] = max(state_progress, size_progress) if model["downloading"] else size_progress
+        model["download_message"] = state.get("message", "") if state else ""
+        model["download_error"] = state.get("error", "") if state else ""
+    return JSONResponse({"models": models})
+
+
+@app.post("/api/models/asr/{model_id}/download")
+@app.post("/api/asr-models/{model_id}/download")
+@app.post("/api/asr/models/{model_id}/download")
+async def download_asr_model(
+    model_id: str,
+    background_tasks: BackgroundTasks,
+    _: None = Depends(verify_token),
+) -> JSONResponse:
+    try:
+        model_path = asr_model_manager.model_dir(model_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    if asr_model_manager.is_installed(model_id):
+        return JSONResponse({"status": "already_exists", "path": str(model_path)})
+
+    state = ASR_DOWNLOADS.get(model_id)
+    if state and state.get("status") == "running":
+        return JSONResponse({"status": "already_downloading", "path": str(model_path)})
+
+    ASR_DOWNLOADS[model_id] = {
+        "status": "running",
+        "progress": 0.0,
+        "message": "准备下载",
+        "error": "",
+    }
+
+    def progress_cb(progress: float, message: str) -> None:
+        ASR_DOWNLOADS[model_id] = {
+            "status": "running",
+            "progress": progress,
+            "message": message,
+            "error": "",
+        }
+
+    def run_download() -> None:
+        try:
+            asr_model_manager.download_model(model_id, progress_cb=progress_cb)
+            ASR_DOWNLOADS[model_id] = {
+                "status": "completed",
+                "progress": 1.0,
+                "message": "下载完成",
+                "error": "",
+            }
+        except Exception as exc:  # noqa: BLE001
+            ASR_DOWNLOADS[model_id] = {
+                "status": "failed",
+                "progress": 0.0,
+                "message": "下载失败",
+                "error": str(exc),
+            }
+
+    background_tasks.add_task(run_download)
+    return JSONResponse({"status": "started", "path": str(model_path)})
+
+
+@app.delete("/api/models/asr/{model_id}")
+@app.delete("/api/asr-models/{model_id}")
+@app.delete("/api/asr/models/{model_id}")
+async def delete_asr_model(model_id: str, _: None = Depends(verify_token)) -> JSONResponse:
+    global _settings
+    state = ASR_DOWNLOADS.get(model_id)
+    if state and state.get("status") == "running":
+        raise HTTPException(status_code=409, detail="模型正在下载中，完成或失败后才能删除。")
+
+    try:
+        model_path = asr_model_manager.delete_model(model_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    ASR_DOWNLOADS.pop(model_id, None)
+
+    latest = settings_manager.get().transcription
+    if latest.asr_model == model_id:
+        settings_manager.update_transcription(asr_model="sensevoice-sherpa-2024")
+        _settings = settings_manager.get()
+        engine.set_transcription_options(
+            _settings.transcription.accuracy_mode,
+            _settings.transcription.domain_profile,
+            _settings.transcription.asr_model,
+        )
+
+    return JSONResponse({"status": "deleted", "path": str(model_path)})
 
 
 @app.get("/api/tasks")
@@ -559,6 +694,13 @@ async def _run_task(task_id: str, source_info: dict, cleanup_paths: list[str]) -
         if engine._correction_engine:
             engine._correction_engine.set_hot_words(hotword_manager.list_all())
 
+        transcription = settings_manager.get().transcription
+        engine.set_transcription_options(
+            transcription.accuracy_mode,
+            transcription.domain_profile,
+            transcription.asr_model,
+        )
+
         # For URL tasks, map transcription progress from 0.3 to 1.0
         if source_info.get("type") == "url":
             def url_progress_cb(progress: float, stage: str, partial: str) -> None:
@@ -640,7 +782,50 @@ def _command_exists(cmd: str) -> bool:
     return shutil.which(cmd) is not None
 
 
-def _split_segment_text(text: str, max_chars: int = 40) -> list[str]:
+def _split_text_to_length(text: str, max_chars: int) -> list[str]:
+    text = text.strip()
+    if not text:
+        return []
+    if len(text) <= max_chars:
+        return [text]
+
+    if " " in text:
+        lines: list[str] = []
+        current = ""
+        for word in text.split():
+            if not current:
+                if len(word) <= max_chars:
+                    current = word
+                else:
+                    chunks = [word[i : i + max_chars] for i in range(0, len(word), max_chars)]
+                    lines.extend(chunks[:-1])
+                    current = chunks[-1]
+                continue
+
+            candidate = f"{current} {word}"
+            if len(candidate) <= max_chars:
+                current = candidate
+                continue
+
+            lines.append(current)
+            if len(word) <= max_chars:
+                current = word
+            else:
+                chunks = [word[i : i + max_chars] for i in range(0, len(word), max_chars)]
+                lines.extend(chunks[:-1])
+                current = chunks[-1]
+        if current:
+            lines.append(current)
+        return lines
+
+    return [
+        text[i : i + max_chars].strip()
+        for i in range(0, len(text), max_chars)
+        if text[i : i + max_chars].strip()
+    ]
+
+
+def _split_segment_text(text: str, max_chars: int = SRT_MAX_CHARS_PER_CUE) -> list[str]:
     """Split long text into smaller chunks respecting punctuation, then length."""
     text = (text or "").strip()
     if not text:
@@ -663,9 +848,16 @@ def _split_segment_text(text: str, max_chars: int = 40) -> list[str]:
         if len(part) <= max_chars:
             final_parts.append(part)
             continue
-        for i in range(0, len(part), max_chars):
-            final_parts.append(part[i : i + max_chars].strip())
+        final_parts.extend(_split_text_to_length(part, max_chars))
     return [p for p in final_parts if p]
+
+
+def _wrap_srt_text(text: str, max_chars: int = SRT_MAX_CHARS_PER_LINE) -> str:
+    """Wrap one subtitle cue across display-safe SRT text lines."""
+    wrapped_lines: list[str] = []
+    for paragraph in (text or "").splitlines() or [text or ""]:
+        wrapped_lines.extend(_split_text_to_length(paragraph, max_chars))
+    return "\n".join(wrapped_lines)
 
 
 def _normalize_sub_durations(
@@ -693,7 +885,7 @@ def _normalize_sub_durations(
 
 
 def _split_segment(
-    seg: dict, max_chars: int = 40, max_duration_ms: int = 6000
+    seg: dict, max_chars: int = SRT_MAX_CHARS_PER_CUE, max_duration_ms: int = 6000
 ) -> list[dict]:
     """Split a segment into smaller SRT-friendly pieces."""
     start_ms = int(seg.get("start_ms", 0))
@@ -745,7 +937,7 @@ def _segments_to_srt(segments: list[dict]) -> str:
         for sub in _split_segment(seg):
             start = _ms_to_timestamp(sub.get("start_ms", 0))
             end = _ms_to_timestamp(sub.get("end_ms", 0))
-            text = sub.get("text", "")
+            text = _wrap_srt_text(str(sub.get("text", "")))
             lines.append(f"{index}\n{start} --> {end}\n{text}\n")
             index += 1
     return "\n".join(lines)

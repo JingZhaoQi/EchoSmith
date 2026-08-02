@@ -5,17 +5,23 @@ from __future__ import annotations
 import asyncio
 import os
 import platform
-import queue
 import re
 import subprocess
-import threading
 import wave
-from dataclasses import dataclass, replace
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
 import numpy as np
 import sherpa_onnx
+
+try:
+    from transcript_enhancer import EnhancementOptions, enhance_segments, enhance_text
+    from asr_models import DEFAULT_ASR_MODEL_ID, is_sherpa_model, sanitize_model_id
+except ImportError:
+    from .transcript_enhancer import EnhancementOptions, enhance_segments, enhance_text
+    from .asr_models import DEFAULT_ASR_MODEL_ID, is_sherpa_model, sanitize_model_id
 
 
 def _subprocess_kwargs() -> dict:
@@ -40,14 +46,19 @@ def _subprocess_kwargs() -> dict:
         kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW  # 0x08000000
     return kwargs
 
+
 MODEL_CARD = "SenseVoice INT8 (sherpa-onnx)"
+VALID_ACCURACY_MODES = {"fast", "balanced", "accurate"}
+VALID_DOMAIN_PROFILES = {"general", "sermon", "academic", "meeting", "tech"}
 
 # Default model directory (platform-aware, matches download_models.py)
 if platform.system() == "Windows":
     _local_app_data = os.environ.get("LOCALAPPDATA", "")
     if _local_app_data:
         DEFAULT_MODEL_DIR = os.path.join(_local_app_data, "sherpa-onnx", "sense-voice")
-        DEFAULT_VAD_MODEL = os.path.join(_local_app_data, "sherpa-onnx", "silero_vad.onnx")
+        DEFAULT_VAD_MODEL = os.path.join(
+            _local_app_data, "sherpa-onnx", "silero_vad.onnx"
+        )
     else:
         DEFAULT_MODEL_DIR = os.path.expanduser("~/.cache/sherpa-onnx/sense-voice")
         DEFAULT_VAD_MODEL = os.path.expanduser("~/.cache/sherpa-onnx/silero_vad.onnx")
@@ -77,6 +88,7 @@ class TranscriptionResult:
 @dataclass
 class SpeechRegion:
     """Copied speech data from VAD (safe after vad.pop())."""
+
     start_sample: int
     samples: np.ndarray  # float32 numpy array (NOT Python list)
 
@@ -86,6 +98,8 @@ ProgressCallback = Callable[[float, str, str], None]
 SENTENCE_PATTERN = re.compile(
     r"[^。！？!?…\n]+[。！？!?…]+|[^。！？!?…\n]+", re.UNICODE
 )
+CORRECTION_CHUNK_CHARS = 2000
+MAX_PARALLEL_CORRECTIONS = 3
 
 
 def _split_sentences(text: str) -> list[str]:
@@ -96,6 +110,15 @@ def _split_sentences(text: str) -> list[str]:
         segment.strip() for segment in SENTENCE_PATTERN.findall(text) if segment.strip()
     ]
     return sentences
+
+
+def _audio_filter_for_accuracy_mode(accuracy_mode: str) -> str | None:
+    """Return ffmpeg audio filter for the requested accuracy mode."""
+    if accuracy_mode == "fast":
+        return None
+    if accuracy_mode in {"balanced", "accurate"}:
+        return "highpass=f=80,lowpass=f=7800,loudnorm=I=-16:TP=-1.5:LRA=11"
+    return "highpass=f=80,lowpass=f=7800,loudnorm=I=-16:TP=-1.5:LRA=11"
 
 
 class ASREngine:
@@ -113,6 +136,7 @@ class ASREngine:
         """
         try:
             import subprocess as _sp
+
             out = _sp.check_output(
                 ["sysctl", "-n", "hw.perflevel0.logicalcpu"], text=True
             ).strip()
@@ -150,6 +174,9 @@ class ASREngine:
         use_int8: bool = True,
         language: str = "zh",
         correction_engine=None,  # CorrectionEngine | None
+        accuracy_mode: str = "balanced",
+        domain_profile: str = "general",
+        asr_model: str = DEFAULT_ASR_MODEL_ID,
     ) -> None:
         self._recognizer: sherpa_onnx.OfflineRecognizer | None = None
         self._vad_config: sherpa_onnx.VadModelConfig | None = None
@@ -163,6 +190,43 @@ class ASREngine:
         self._use_int8 = use_int8
         self._language = language if language in self.SUPPORTED_LANGUAGES else "zh"
         self._correction_engine = correction_engine
+        self._accuracy_mode = "balanced"
+        self._domain_profile = "general"
+        self._asr_model = DEFAULT_ASR_MODEL_ID
+        self.set_transcription_options(accuracy_mode, domain_profile, asr_model)
+
+    @property
+    def accuracy_mode(self) -> str:
+        return self._accuracy_mode
+
+    @property
+    def domain_profile(self) -> str:
+        return self._domain_profile
+
+    @property
+    def asr_model(self) -> str:
+        return self._asr_model
+
+    def set_transcription_options(
+        self,
+        accuracy_mode: str,
+        domain_profile: str,
+        asr_model: str = DEFAULT_ASR_MODEL_ID,
+    ) -> None:
+        self._accuracy_mode = (
+            accuracy_mode if accuracy_mode in VALID_ACCURACY_MODES else "balanced"
+        )
+        self._domain_profile = (
+            domain_profile if domain_profile in VALID_DOMAIN_PROFILES else "general"
+        )
+        self._asr_model = sanitize_model_id(asr_model)
+        if self._correction_engine is not None and hasattr(
+            self._correction_engine, "set_transcription_context"
+        ):
+            self._correction_engine.set_transcription_context(
+                accuracy_mode=self._accuracy_mode,
+                domain_profile=self._domain_profile,
+            )
 
     def get_model_cache_dir(self) -> str:
         """Get the directory where models will be cached."""
@@ -183,6 +247,8 @@ class ASREngine:
 
     def has_model(self) -> bool:
         """Return whether the model has been loaded."""
+        if not is_sherpa_model(self._asr_model):
+            return True
         return self._recognizer is not None
 
     async def set_language(self, language: str) -> None:
@@ -286,7 +352,8 @@ class ASREngine:
         pause_event: asyncio.Event | None = None,
         cancelled_checker: Callable[[], bool] | None = None,
     ) -> TranscriptionResult:
-        await self.ensure_model()
+        if is_sherpa_model(self._asr_model):
+            await self.ensure_model()
         return await asyncio.to_thread(
             self._transcribe_sync,
             audio_path,
@@ -305,6 +372,7 @@ class ASREngine:
             return True
         if pause_event is not None:
             import time
+
             while not pause_event.is_set():
                 if cancelled_checker and cancelled_checker():
                     return True
@@ -323,7 +391,9 @@ class ASREngine:
         so we must copy start + samples before calling pop().
         """
         assert self._vad_config is not None
-        vad = sherpa_onnx.VoiceActivityDetector(self._vad_config, buffer_size_in_seconds=600)
+        vad = sherpa_onnx.VoiceActivityDetector(
+            self._vad_config, buffer_size_in_seconds=600
+        )
         window = self._vad_config.silero_vad.window_size
         total = len(samples)
         last_pct = -1
@@ -345,10 +415,12 @@ class ASREngine:
         regions: list[SpeechRegion] = []
         while not vad.empty():
             seg = vad.front
-            regions.append(SpeechRegion(
-                start_sample=int(seg.start),
-                samples=np.array(seg.samples, dtype=np.float32),
-            ))
+            regions.append(
+                SpeechRegion(
+                    start_sample=int(seg.start),
+                    samples=np.array(seg.samples, dtype=np.float32),
+                )
+            )
             vad.pop()
         return regions
 
@@ -359,8 +431,6 @@ class ASREngine:
         pause_event: asyncio.Event | None = None,
         cancelled_checker: Callable[[], bool] | None = None,
     ) -> TranscriptionResult:
-        assert self._recognizer is not None
-
         duration_ms = probe_duration_ms(audio_path)
 
         if progress_cb:
@@ -372,6 +442,17 @@ class ASREngine:
         wav_path = self._ensure_wav_format(audio_path)
 
         try:
+            if not is_sherpa_model(self._asr_model):
+                return self._transcribe_external(
+                    wav_path,
+                    duration_ms,
+                    progress_cb,
+                    pause_event,
+                    cancelled_checker,
+                )
+
+            assert self._recognizer is not None
+
             if progress_cb:
                 progress_cb(0.1, "读取音频", "")
 
@@ -380,15 +461,78 @@ class ASREngine:
             # Use VAD if available, otherwise fall back to fixed chunking
             if self._vad_config is not None:
                 return self._transcribe_with_vad(
-                    samples, sample_rate, duration_ms, progress_cb, pause_event, cancelled_checker
+                    samples,
+                    sample_rate,
+                    duration_ms,
+                    progress_cb,
+                    pause_event,
+                    cancelled_checker,
                 )
 
             return self._transcribe_fixed_chunks(
-                samples, sample_rate, duration_ms, progress_cb, pause_event, cancelled_checker
+                samples,
+                sample_rate,
+                duration_ms,
+                progress_cb,
+                pause_event,
+                cancelled_checker,
             )
         finally:
             if wav_path != audio_path and wav_path.exists():
                 wav_path.unlink(missing_ok=True)
+
+    def _transcribe_external(
+        self,
+        audio_path: Path,
+        duration_ms: int,
+        progress_cb: ProgressCallback | None,
+        pause_event: asyncio.Event | None,
+        cancelled_checker: Callable[[], bool] | None,
+    ) -> TranscriptionResult:
+        if progress_cb:
+            progress_cb(0.12, "准备本地识别模型", "")
+        try:
+            from asr_providers import transcribe_with_external_provider
+        except ImportError:
+            from .asr_providers import transcribe_with_external_provider
+
+        hotwords: list[str] = []
+        if self._correction_engine is not None:
+            hotwords = list(getattr(self._correction_engine, "_hot_words", []))
+
+        def provider_progress(provider_value: float, stage: str, partial: str) -> None:
+            if not progress_cb:
+                return
+            clamped = min(max(provider_value, 0.0), 1.0)
+            progress_cb(0.15 + 0.70 * clamped, stage, partial)
+
+        def provider_cancelled() -> bool:
+            return self._check_interrupted(pause_event, cancelled_checker)
+
+        result = transcribe_with_external_provider(
+            model_id=self._asr_model,
+            audio_path=audio_path,
+            duration_ms=duration_ms,
+            language=self._language,
+            hotwords=hotwords,
+            progress_cb=provider_progress,
+            cancelled_checker=provider_cancelled,
+        )
+        if provider_cancelled():
+            return result
+        if progress_cb:
+            progress_cb(0.85, "转写完成", result.text)
+        segments, final_text = self._enhance_output(result.segments)
+        if self._correction_engine is not None and segments:
+            if progress_cb:
+                progress_cb(0.9, "智能纠错中…", final_text)
+            segments, final_text = self._post_correct(segments, progress_cb)
+            segments, final_text = self._enhance_output(segments)
+        if progress_cb:
+            progress_cb(1.0, "完成", final_text)
+        return TranscriptionResult(
+            text=final_text, segments=segments, duration_ms=duration_ms
+        )
 
     def _transcribe_with_vad(
         self,
@@ -405,49 +549,24 @@ class ASREngine:
         if progress_cb:
             progress_cb(0.12, "语音检测中", "")
 
-        speech_segments = self._detect_speech_segments(samples, sample_rate, progress_cb)
+        speech_segments = self._detect_speech_segments(
+            samples, sample_rate, progress_cb
+        )
 
         if not speech_segments:
             if progress_cb:
                 progress_cb(1.0, "完成", "")
             return TranscriptionResult(text="", segments=[], duration_ms=duration_ms)
 
-        from pipeline import correction_worker, SENTINEL
-
-        seg_queue: queue.Queue = queue.Queue()
-        corrected_output: list[Segment] = []
-        output_lock = threading.Lock()
-        total = len(speech_segments)
-
-        # Correction progress callback
-        def correction_progress_cb(count: int, stage: str) -> None:
-            if progress_cb:
-                ratio = min(count / total, 1.0)
-                progress_cb(0.70 + 0.25 * ratio, stage, "")
-
-        # Start correction worker thread
-        correction_thread = threading.Thread(
-            target=correction_worker,
-            kwargs=dict(
-                seg_queue=seg_queue,
-                output=corrected_output,
-                output_lock=output_lock,
-                correction_engine=self._correction_engine,
-                batch_size=5,
-                progress_cb=correction_progress_cb,
-            ),
-            daemon=True,
-        )
-        correction_thread.start()
-
-        # Transcription producer loop (existing logic, now puts into queue)
         all_texts: list[str] = []
+        all_segments: list[Segment] = []
+        total = len(speech_segments)
 
         for idx, seg in enumerate(speech_segments):
             if self._check_interrupted(pause_event, cancelled_checker):
                 break
 
-            progress = 0.15 + 0.55 * (idx / total)
+            progress = 0.15 + 0.80 * (idx / total)
             if progress_cb:
                 progress_cb(progress, f"转写中 {idx + 1}/{total}", " ".join(all_texts))
 
@@ -474,31 +593,33 @@ class ASREngine:
                 s_end = cursor_ms + int(seg_duration_ms * proportion)
                 if s_idx == len(sentences) - 1:
                     s_end = end_ms
-                segment = Segment(
-                    index=0,  # will be reassigned after correction
-                    start_ms=cursor_ms,
-                    end_ms=s_end,
-                    text=sentence,
+                all_segments.append(
+                    Segment(
+                        index=len(all_segments),
+                        start_ms=cursor_ms,
+                        end_ms=s_end,
+                        text=sentence,
+                    )
                 )
-                seg_queue.put(segment)
                 cursor_ms = s_end
 
-        # Signal end to correction thread
-        seg_queue.put(SENTINEL)
-        correction_thread.join(timeout=120)
+        all_segments, final_text = self._enhance_output(all_segments)
 
-        # Reassign indices and build final result
-        with output_lock:
-            for i, seg in enumerate(corrected_output):
-                corrected_output[i] = replace(seg, index=i)
+        if progress_cb:
+            progress_cb(0.95, "转写完成", final_text)
 
-        final_text = " ".join(seg.text for seg in corrected_output).strip()
+        # Post-correction: one-shot full-text correction via API
+        if self._correction_engine is not None and all_segments:
+            if progress_cb:
+                progress_cb(0.96, "智能纠错中…", final_text)
+            all_segments, final_text = self._post_correct(all_segments, progress_cb)
+            all_segments, final_text = self._enhance_output(all_segments)
 
         if progress_cb:
             progress_cb(1.0, "完成", final_text)
 
         return TranscriptionResult(
-            text=final_text, segments=corrected_output, duration_ms=duration_ms
+            text=final_text, segments=all_segments, duration_ms=duration_ms
         )
 
     def _transcribe_fixed_chunks(
@@ -531,7 +652,11 @@ class ASREngine:
 
             progress = 0.1 + 0.8 * (chunk_idx / num_chunks)
             if progress_cb:
-                progress_cb(progress, f"转写中 {chunk_idx + 1}/{num_chunks}", " ".join(all_texts))
+                progress_cb(
+                    progress,
+                    f"转写中 {chunk_idx + 1}/{num_chunks}",
+                    " ".join(all_texts),
+                )
 
             stream = self._recognizer.create_stream()
             stream.accept_waveform(sample_rate, chunk_samples)
@@ -549,16 +674,28 @@ class ASREngine:
 
             current_offset_ms += chunk_duration_ms
 
-        final_text = " ".join(all_texts).strip()
+        all_segments, final_text = self._enhance_output(all_segments)
         if progress_cb:
             progress_cb(1.0, "完成", final_text)
 
-        return TranscriptionResult(text=final_text, segments=all_segments, duration_ms=duration_ms)
+        return TranscriptionResult(
+            text=final_text, segments=all_segments, duration_ms=duration_ms
+        )
+
+    def _enhance_output(self, segments: list[Segment]) -> tuple[list[Segment], str]:
+        options = EnhancementOptions(
+            accuracy_mode=self._accuracy_mode,
+            domain_profile=self._domain_profile,
+        )
+        enhanced_segments = enhance_segments(segments, options)
+        final_text = enhance_text(" ".join(s.text for s in enhanced_segments), options)
+        return enhanced_segments, final_text
 
     def _ensure_wav_format(self, audio_path: Path) -> Path:
         """Convert audio to 16kHz mono WAV if needed."""
+        audio_filter = _audio_filter_for_accuracy_mode(self._accuracy_mode)
         # If already a WAV file, check format
-        if audio_path.suffix.lower() == ".wav":
+        if audio_filter is None and audio_path.suffix.lower() == ".wav":
             try:
                 with wave.open(str(audio_path), "rb") as wf:
                     if wf.getnchannels() == 1 and wf.getframerate() == 16000:
@@ -583,8 +720,10 @@ class ASREngine:
             "1",
             "-ar",
             "16000",
-            str(tmp_path),
         ]
+        if audio_filter:
+            cmd.extend(["-af", audio_filter])
+        cmd.append(str(tmp_path))
         result = subprocess.run(cmd, **_subprocess_kwargs())
         if result.returncode != 0:
             raise RuntimeError(f"ffmpeg 转换失败: {result.stderr.strip()}")
@@ -599,6 +738,95 @@ class ASREngine:
         # ascontiguousarray ensures optimal memory layout for ONNX Runtime
         samples = np.frombuffer(raw_data, dtype=np.int16).astype(np.float32) / 32768.0
         return np.ascontiguousarray(samples), sample_rate
+
+    def _post_correct(
+        self,
+        segments: list[Segment],
+        progress_cb: ProgressCallback | None = None,
+    ) -> tuple[list[Segment], str]:
+        """One-shot full-text correction after transcription completes.
+
+        Sends all text to the correction engine in chunks of ~2000 chars.
+        Returns (corrected_segments, corrected_full_text).
+        """
+        assert self._correction_engine is not None
+
+        # Group segments into chunks sized for API correction.
+        chunks: list[list[Segment]] = []
+        current_chunk: list[Segment] = []
+        current_len = 0
+        for seg in segments:
+            current_chunk.append(seg)
+            current_len += len(seg.text)
+            if current_len >= CORRECTION_CHUNK_CHARS:
+                chunks.append(current_chunk)
+                current_chunk = []
+                current_len = 0
+        if current_chunk:
+            chunks.append(current_chunk)
+
+        contexts: list[str] = []
+        preceding = ""
+        for chunk in chunks:
+            contexts.append(preceding[-500:])
+            preceding += "".join(seg.text for seg in chunk)
+            if len(preceding) > 500:
+                preceding = preceding[-500:]
+
+        def correct_chunk(
+            i: int, chunk: list[Segment], context: str
+        ) -> tuple[int, list[str]]:
+            texts = [s.text for s in chunk]
+            try:
+                corrected = self._correction_engine.correct(
+                    texts, preceding_text=context
+                )
+                print(f"[CORRECTION] 纠错 {i + 1}/{len(chunks)} 完成", flush=True)
+            except Exception as exc:
+                print(f"[CORRECTION] 纠错异常: {exc}", flush=True)
+                corrected = texts
+            if len(corrected) != len(texts):
+                corrected = texts
+            return i, corrected
+
+        corrected_text_chunks: list[list[str] | None] = [None] * len(chunks)
+        completed = 0
+        max_workers = min(MAX_PARALLEL_CORRECTIONS, len(chunks))
+
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = [
+                pool.submit(correct_chunk, i, chunk, contexts[i])
+                for i, chunk in enumerate(chunks)
+            ]
+            for future in as_completed(futures):
+                chunk_idx, corrected = future.result()
+                corrected_text_chunks[chunk_idx] = corrected
+                completed += 1
+                if progress_cb:
+                    ratio = completed / len(chunks)
+                    progress_cb(
+                        0.96 + 0.03 * ratio,
+                        f"智能纠错中 {completed}/{len(chunks)}",
+                        _join_completed_correction_chunks(
+                            chunks, corrected_text_chunks
+                        ),
+                    )
+
+        corrected_segments: list[Segment] = []
+        for chunk, corrected in zip(chunks, corrected_text_chunks):
+            corrected = corrected or [seg.text for seg in chunk]
+            for seg, ct in zip(chunk, corrected):
+                corrected_segments.append(
+                    Segment(
+                        index=len(corrected_segments),
+                        start_ms=seg.start_ms,
+                        end_ms=seg.end_ms,
+                        text=ct,
+                    )
+                )
+
+        final_text = " ".join(s.text for s in corrected_segments).strip()
+        return corrected_segments, final_text
 
     def _create_segments(self, text: str, duration_ms: int) -> list[Segment]:
         """Split text into segments with estimated timestamps."""
@@ -657,3 +885,15 @@ def probe_duration_ms(audio_path: Path) -> int:
     except ValueError as exc:
         raise RuntimeError("无法解析音频时长") from exc
     return int(seconds * 1000)
+
+
+def _join_completed_correction_chunks(
+    chunks: list[list[Segment]],
+    corrected_text_chunks: list[list[str] | None],
+) -> str:
+    texts: list[str] = []
+    for chunk, corrected in zip(chunks, corrected_text_chunks):
+        if corrected is None:
+            break
+        texts.extend(corrected[: len(chunk)])
+    return " ".join(texts).strip()
