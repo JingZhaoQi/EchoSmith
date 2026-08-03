@@ -19,6 +19,7 @@ class OptionalASRDependencyError(RuntimeError):
 
 
 ProviderProgressCallback = Callable[[float, str, str], None]
+ProviderSegmentsCallback = Callable[[list], None]
 
 _QWEN3_CHUNK_SECONDS = 60
 _FUNASR_CHUNK_SECONDS = 30
@@ -40,6 +41,7 @@ def transcribe_with_external_provider(
     model_manager: ASRModelManager | None = None,
     progress_cb: ProviderProgressCallback | None = None,
     cancelled_checker: Callable[[], bool] | None = None,
+    segments_cb: ProviderSegmentsCallback | None = None,
 ) -> TranscriptionResult:
     spec = get_model_spec(model_id)
     manager = model_manager or ASRModelManager()
@@ -55,6 +57,7 @@ def transcribe_with_external_provider(
             language,
             progress_cb,
             cancelled_checker,
+            segments_cb,
         )
     if spec.provider == "funasr":
         return _transcribe_funasr(
@@ -65,6 +68,7 @@ def transcribe_with_external_provider(
             hotwords,
             progress_cb,
             cancelled_checker,
+            segments_cb,
         )
     raise RuntimeError(f"模型 {model_id} 不是外部 ASR provider")
 
@@ -77,6 +81,7 @@ def _transcribe_qwen3(
     language: str,
     progress_cb: ProviderProgressCallback | None,
     cancelled_checker: Callable[[], bool] | None,
+    segments_cb: ProviderSegmentsCallback | None = None,
 ) -> TranscriptionResult:
     try:
         from qwen_asr import Qwen3ASRModel
@@ -95,6 +100,7 @@ def _transcribe_qwen3(
         _qwen3_language(language),
         progress_cb,
         cancelled_checker,
+        segments_cb,
     )
 
 
@@ -132,6 +138,7 @@ def _transcribe_qwen3_chunks(
     language: str | None,
     progress_cb: ProviderProgressCallback | None,
     cancelled_checker: Callable[[], bool] | None,
+    segments_cb: ProviderSegmentsCallback | None = None,
 ) -> TranscriptionResult:
     chunks = _read_audio_chunks(audio_path, _QWEN3_CHUNK_SECONDS)
     if not chunks:
@@ -159,14 +166,15 @@ def _transcribe_qwen3_chunks(
         text = _extract_text(result)
         if text:
             all_texts.append(text)
-            all_segments.append(
-                Segment(
-                    index=len(all_segments),
-                    start_ms=start_ms,
-                    end_ms=min(end_ms, duration_ms),
-                    text=text,
-                )
+            segment = Segment(
+                index=len(all_segments),
+                start_ms=start_ms,
+                end_ms=min(end_ms, duration_ms),
+                text=text,
             )
+            all_segments.append(segment)
+            if segments_cb:
+                segments_cb([segment])
 
         partial = "\n".join(all_texts).strip()
         if progress_cb:
@@ -229,6 +237,7 @@ def _transcribe_funasr(
     hotwords: list[str],
     progress_cb: ProviderProgressCallback | None,
     cancelled_checker: Callable[[], bool] | None = None,
+    segments_cb: ProviderSegmentsCallback | None = None,
 ) -> TranscriptionResult:
     try:
         from funasr import AutoModel
@@ -247,6 +256,7 @@ def _transcribe_funasr(
         hotwords,
         progress_cb,
         cancelled_checker,
+        segments_cb,
     )
 
 
@@ -284,6 +294,7 @@ def _transcribe_funasr_chunks(
     hotwords: list[str],
     progress_cb: ProviderProgressCallback | None,
     cancelled_checker: Callable[[], bool] | None,
+    segments_cb: ProviderSegmentsCallback | None = None,
 ) -> TranscriptionResult:
     chunks = _read_audio_chunks(audio_path, _FUNASR_CHUNK_SECONDS)
     if not chunks:
@@ -316,14 +327,15 @@ def _transcribe_funasr_chunks(
         text = _extract_text(result)
         if text:
             all_texts.append(text)
-            all_segments.append(
-                Segment(
-                    index=len(all_segments),
-                    start_ms=start_ms,
-                    end_ms=min(end_ms, duration_ms),
-                    text=text,
-                )
+            segment = Segment(
+                index=len(all_segments),
+                start_ms=start_ms,
+                end_ms=min(end_ms, duration_ms),
+                text=text,
             )
+            all_segments.append(segment)
+            if segments_cb:
+                segments_cb([segment])
 
         partial = "\n".join(all_texts).strip()
         if progress_cb:

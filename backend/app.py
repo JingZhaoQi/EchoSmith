@@ -591,6 +591,7 @@ async def _run_task(task_id: str, source_info: dict, cleanup_paths: list[str]) -
     control = TASK_CONTROLS.get(task_id)
 
     _max_progress = 0.0
+    _correction_started = False
 
     def progress_cb(progress: float, stage: str, partial: str) -> None:
         nonlocal _max_progress
@@ -603,17 +604,46 @@ async def _run_task(task_id: str, source_info: dict, cleanup_paths: list[str]) -
             _max_progress = progress
         else:
             progress = _max_progress
+        update_kwargs: dict = {
+            "status": status,
+            "progress": progress,
+            "message": stage,
+            "log": {
+                "timestamp": time.time(),
+                "type": "progress",
+                "message": stage,
+                "progress": progress,
+            },
+        }
+        # The final "完成" callback carries corrected text; keep raw_text
+        # strictly for pre-correction transcript updates.
+        if progress < 1.0:
+            update_kwargs["raw_text"] = partial
+        # Until correction starts producing text, the raw transcript doubles
+        # as the displayed result so the UI streams as usual.
+        if not _correction_started:
+            update_kwargs["result_text"] = partial
+        asyncio.run_coroutine_threadsafe(
+            task_store.update_task(task_id, **update_kwargs),
+            loop,
+        )
+
+    def correction_cb(done: int, total: int, corrected_prefix: str) -> None:
+        nonlocal _correction_started
+        _correction_started = True
+        ratio = done / total if total > 0 else 0.0
+        progress = 0.92 + 0.07 * min(ratio, 1.0)
         asyncio.run_coroutine_threadsafe(
             task_store.update_task(
                 task_id,
-                status=status,
+                status=TaskStatus.RUNNING,
                 progress=progress,
-                message=stage,
-                result_text=partial,
+                message=f"智能纠错中 {done}/{total}",
+                result_text=corrected_prefix,
                 log={
                     "timestamp": time.time(),
                     "type": "progress",
-                    "message": stage,
+                    "message": f"智能纠错中 {done}/{total}",
                     "progress": progress,
                 },
             ),
@@ -716,6 +746,7 @@ async def _run_task(task_id: str, source_info: dict, cleanup_paths: list[str]) -
             progress_cb=actual_progress_cb,
             pause_event=control.pause_event if control else None,
             cancelled_checker=(lambda: control.cancelled) if control else None,
+            correction_cb=correction_cb,
         )
 
         if control and control.cancelled:
@@ -739,6 +770,7 @@ async def _run_task(task_id: str, source_info: dict, cleanup_paths: list[str]) -
                 progress=1.0,
                 message="完成",
                 result_text=result.text,
+                raw_text=result.raw_text or None,
                 segments=[segment.__dict__ for segment in result.segments],
                 log={"timestamp": time.time(), "type": "info", "message": "任务完成"},
             )

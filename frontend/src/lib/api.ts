@@ -25,6 +25,7 @@ export interface TaskSnapshot {
   progress: number;
   message: string;
   result_text?: string | null;
+  raw_text?: string | null;
   segments: Array<{ index: number; start_ms: number; end_ms: number; text: string }>;
   source: Record<string, unknown>;
   error?: string | null;

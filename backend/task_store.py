@@ -26,6 +26,7 @@ class TaskRecord:
     progress: float = 0.0
     message: str = ""
     result_text: str | None = None
+    raw_text: str | None = None
     segments: list[dict[str, Any]] = field(default_factory=list)
     source: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
@@ -40,6 +41,7 @@ class TaskRecord:
             "progress": self.progress,
             "message": self.message,
             "result_text": self.result_text,
+            "raw_text": self.raw_text,
             "segments": self.segments,
             "source": self.source,
             "error": self.error,
@@ -70,6 +72,7 @@ class TaskStore:
         progress: float | None = None,
         message: str | None = None,
         result_text: str | None = None,
+        raw_text: str | None = None,
         segments: list[dict[str, Any]] | None = None,
         error: str | None = None,
         log: dict[str, Any] | None = None,
@@ -87,6 +90,8 @@ class TaskStore:
                 record.message = message
             if result_text is not None:
                 record.result_text = result_text
+            if raw_text is not None:
+                record.raw_text = raw_text
             if segments is not None:
                 record.segments = segments
             if error is not None:

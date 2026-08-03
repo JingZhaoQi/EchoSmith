@@ -7,8 +7,9 @@ import os
 import platform
 import re
 import subprocess
+import threading
 import wave
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -83,6 +84,7 @@ class TranscriptionResult:
     text: str
     segments: list[Segment]
     duration_ms: int
+    raw_text: str = ""
 
 
 @dataclass
@@ -94,12 +96,14 @@ class SpeechRegion:
 
 
 ProgressCallback = Callable[[float, str, str], None]
+CorrectionProgressCallback = Callable[[int, int, str], None]
 
 SENTENCE_PATTERN = re.compile(
     r"[^。！？!?…\n]+[。！？!?…]+|[^。！？!?…\n]+", re.UNICODE
 )
-CORRECTION_CHUNK_CHARS = 2000
-MAX_PARALLEL_CORRECTIONS = 3
+CORRECTION_CHUNK_CHARS = 1000
+MAX_PARALLEL_CORRECTIONS = 6
+CORRECTION_CONTEXT_CHARS = 500
 
 
 def _split_sentences(text: str) -> list[str]:
@@ -119,6 +123,111 @@ def _audio_filter_for_accuracy_mode(accuracy_mode: str) -> str | None:
     if accuracy_mode in {"balanced", "accurate"}:
         return "highpass=f=80,lowpass=f=7800,loudnorm=I=-16:TP=-1.5:LRA=11"
     return "highpass=f=80,lowpass=f=7800,loudnorm=I=-16:TP=-1.5:LRA=11"
+
+
+class StreamingCorrector:
+    """Overlap LLM correction with transcription.
+
+    Segments accumulate until roughly CORRECTION_CHUNK_CHARS characters,
+    then each batch is submitted for concurrent correction while
+    transcription continues. Results merge back in original order and
+    fall back to the raw text whenever a batch fails.
+    """
+
+    def __init__(
+        self,
+        correction_engine,  # CorrectionEngine-compatible object
+        chunk_chars: int = CORRECTION_CHUNK_CHARS,
+        max_workers: int = MAX_PARALLEL_CORRECTIONS,
+        on_progress: CorrectionProgressCallback | None = None,
+    ) -> None:
+        self._engine = correction_engine
+        self._chunk_chars = chunk_chars
+        self._pool = ThreadPoolExecutor(max_workers=max_workers)
+        self._on_progress = on_progress
+        self._batches: list[list[Segment]] = []
+        self._results: list[list[str] | None] = []
+        self._futures: list[Future] = []
+        self._buffer: list[Segment] = []
+        self._buffer_chars = 0
+        self._context = ""
+        self._done = 0
+        self._lock = threading.Lock()
+
+    def add(self, segments: list["Segment"]) -> None:
+        """Feed newly transcribed segments; submits a batch once full."""
+        if not segments:
+            return
+        self._buffer.extend(segments)
+        self._buffer_chars += sum(len(seg.text) for seg in segments)
+        if self._buffer_chars >= self._chunk_chars:
+            self._submit_buffer()
+
+    def _submit_buffer(self) -> None:
+        if not self._buffer:
+            return
+        batch = self._buffer
+        self._buffer = []
+        self._buffer_chars = 0
+        batch_idx = len(self._batches)
+        self._batches.append(batch)
+        self._results.append(None)
+        context = self._context[-CORRECTION_CONTEXT_CHARS:]
+        self._context = (
+            self._context + "".join(seg.text for seg in batch)
+        )[-CORRECTION_CONTEXT_CHARS:]
+        future = self._pool.submit(self._correct_batch, batch_idx, batch, context)
+        self._futures.append(future)
+
+    def _correct_batch(
+        self, batch_idx: int, batch: list["Segment"], context: str
+    ) -> None:
+        texts = [seg.text for seg in batch]
+        try:
+            corrected = self._engine.correct(texts, preceding_text=context)
+            if len(corrected) != len(texts):
+                corrected = texts
+        except Exception as exc:  # noqa: BLE001
+            print(f"[CORRECTION] 批次 {batch_idx + 1} 异常: {exc}", flush=True)
+            corrected = texts
+        with self._lock:
+            self._results[batch_idx] = corrected
+            self._done += 1
+            done = self._done
+            total = len(self._batches)
+            prefix = self._merged_prefix_locked()
+        print(f"[CORRECTION] 批次 {batch_idx + 1} 完成 ({done}/{total})", flush=True)
+        if self._on_progress:
+            self._on_progress(done, total, prefix)
+
+    def _merged_prefix_locked(self) -> str:
+        """Join consecutive completed batches from the start (call under lock)."""
+        texts: list[str] = []
+        for result in self._results:
+            if result is None:
+                break
+            texts.extend(result)
+        return " ".join(texts).strip()
+
+    def finish(self, cancelled: bool = False) -> list[str] | None:
+        """Flush the remaining buffer and wait for in-flight batches.
+
+        Returns one corrected text per added segment in original order,
+        or None when cancelled (caller should fall back to raw text).
+        """
+        if cancelled:
+            self._pool.shutdown(wait=False, cancel_futures=True)
+            return None
+        self._submit_buffer()
+        for future in self._futures:
+            future.result()
+        self._pool.shutdown(wait=True)
+        merged: list[str] = []
+        for batch, result in zip(self._batches, self._results):
+            merged.extend(
+                result if result is not None else [seg.text for seg in batch]
+            )
+        return merged
 
 
 class ASREngine:
@@ -351,6 +460,7 @@ class ASREngine:
         progress_cb: ProgressCallback | None = None,
         pause_event: asyncio.Event | None = None,
         cancelled_checker: Callable[[], bool] | None = None,
+        correction_cb: CorrectionProgressCallback | None = None,
     ) -> TranscriptionResult:
         if is_sherpa_model(self._asr_model):
             await self.ensure_model()
@@ -360,6 +470,7 @@ class ASREngine:
             progress_cb,
             pause_event,
             cancelled_checker,
+            correction_cb,
         )
 
     def _check_interrupted(
@@ -430,6 +541,7 @@ class ASREngine:
         progress_cb: ProgressCallback | None = None,
         pause_event: asyncio.Event | None = None,
         cancelled_checker: Callable[[], bool] | None = None,
+        correction_cb: CorrectionProgressCallback | None = None,
     ) -> TranscriptionResult:
         duration_ms = probe_duration_ms(audio_path)
 
@@ -449,6 +561,7 @@ class ASREngine:
                     progress_cb,
                     pause_event,
                     cancelled_checker,
+                    correction_cb,
                 )
 
             assert self._recognizer is not None
@@ -467,6 +580,7 @@ class ASREngine:
                     progress_cb,
                     pause_event,
                     cancelled_checker,
+                    correction_cb,
                 )
 
             return self._transcribe_fixed_chunks(
@@ -476,6 +590,7 @@ class ASREngine:
                 progress_cb,
                 pause_event,
                 cancelled_checker,
+                correction_cb,
             )
         finally:
             if wav_path != audio_path and wav_path.exists():
@@ -488,6 +603,7 @@ class ASREngine:
         progress_cb: ProgressCallback | None,
         pause_event: asyncio.Event | None,
         cancelled_checker: Callable[[], bool] | None,
+        correction_cb: CorrectionProgressCallback | None = None,
     ) -> TranscriptionResult:
         if progress_cb:
             progress_cb(0.12, "准备本地识别模型", "")
@@ -500,6 +616,12 @@ class ASREngine:
         if self._correction_engine is not None:
             hotwords = list(getattr(self._correction_engine, "_hot_words", []))
 
+        options = EnhancementOptions(
+            accuracy_mode=self._accuracy_mode,
+            domain_profile=self._domain_profile,
+        )
+        corrector = self._create_corrector(correction_cb)
+
         def provider_progress(provider_value: float, stage: str, partial: str) -> None:
             if not progress_cb:
                 return
@@ -509,6 +631,10 @@ class ASREngine:
         def provider_cancelled() -> bool:
             return self._check_interrupted(pause_event, cancelled_checker)
 
+        def provider_segments(new_segments: list[Segment]) -> None:
+            if corrector is not None:
+                corrector.add(enhance_segments(new_segments, options))
+
         result = transcribe_with_external_provider(
             model_id=self._asr_model,
             audio_path=audio_path,
@@ -517,22 +643,77 @@ class ASREngine:
             hotwords=hotwords,
             progress_cb=provider_progress,
             cancelled_checker=provider_cancelled,
+            segments_cb=provider_segments if corrector is not None else None,
         )
         if provider_cancelled():
+            if corrector is not None:
+                corrector.finish(cancelled=True)
             return result
+        segments, raw_text = self._enhance_output(result.segments)
         if progress_cb:
-            progress_cb(0.85, "转写完成", result.text)
-        segments, final_text = self._enhance_output(result.segments)
-        if self._correction_engine is not None and segments:
-            if progress_cb:
-                progress_cb(0.9, "智能纠错中…", final_text)
-            segments, final_text = self._post_correct(segments, progress_cb)
-            segments, final_text = self._enhance_output(segments)
+            progress_cb(0.9, "转写完成", raw_text)
+        corrected = self._apply_streaming_correction(
+            segments, corrector, progress_cb, cancelled_checker
+        )
+        if corrected is not None:
+            segments, final_text = corrected
+        else:
+            final_text = raw_text
         if progress_cb:
             progress_cb(1.0, "完成", final_text)
         return TranscriptionResult(
-            text=final_text, segments=segments, duration_ms=duration_ms
+            text=final_text, segments=segments, duration_ms=duration_ms,
+            raw_text=raw_text,
         )
+
+    def _create_corrector(
+        self,
+        correction_cb: CorrectionProgressCallback | None,
+    ) -> StreamingCorrector | None:
+        """Create a streaming corrector when cloud correction is usable."""
+        engine = self._correction_engine
+        if engine is None:
+            return None
+        has_model = getattr(engine, "has_model", None)
+        if callable(has_model) and not has_model():
+            return None
+        return StreamingCorrector(engine, on_progress=correction_cb)
+
+    def _apply_streaming_correction(
+        self,
+        segments: list[Segment],
+        corrector: StreamingCorrector | None,
+        progress_cb: ProgressCallback | None,
+        cancelled_checker: Callable[[], bool] | None,
+    ) -> tuple[list[Segment], str] | None:
+        """Wait for streamed correction and merge results in order.
+
+        Returns (corrected_segments, corrected_text), or None when there
+        is nothing to merge (no corrector / no segments / cancelled).
+        """
+        if corrector is None:
+            return None
+        if not segments:
+            corrector.finish(cancelled=True)
+            return None
+        if progress_cb:
+            progress_cb(0.93, "智能纠错收尾中…", " ".join(s.text for s in segments))
+        cancelled = bool(cancelled_checker and cancelled_checker())
+        corrected_texts = corrector.finish(cancelled=cancelled)
+        if corrected_texts is None:
+            return None
+        corrected_segments = [
+            Segment(
+                index=index,
+                start_ms=seg.start_ms,
+                end_ms=seg.end_ms,
+                text=corrected_text,
+            )
+            for index, (seg, corrected_text) in enumerate(
+                zip(segments, corrected_texts)
+            )
+        ]
+        return self._enhance_output(corrected_segments)
 
     def _transcribe_with_vad(
         self,
@@ -542,6 +723,7 @@ class ASREngine:
         progress_cb: ProgressCallback | None,
         pause_event: asyncio.Event | None,
         cancelled_checker: Callable[[], bool] | None,
+        correction_cb: CorrectionProgressCallback | None = None,
     ) -> TranscriptionResult:
         """VAD-guided transcription: split on silence, not on fixed intervals."""
         assert self._recognizer is not None
@@ -558,6 +740,12 @@ class ASREngine:
                 progress_cb(1.0, "完成", "")
             return TranscriptionResult(text="", segments=[], duration_ms=duration_ms)
 
+        options = EnhancementOptions(
+            accuracy_mode=self._accuracy_mode,
+            domain_profile=self._domain_profile,
+        )
+        corrector = self._create_corrector(correction_cb)
+
         all_texts: list[str] = []
         all_segments: list[Segment] = []
         total = len(speech_segments)
@@ -566,7 +754,7 @@ class ASREngine:
             if self._check_interrupted(pause_event, cancelled_checker):
                 break
 
-            progress = 0.15 + 0.80 * (idx / total)
+            progress = 0.15 + 0.75 * (idx / total)
             if progress_cb:
                 progress_cb(progress, f"转写中 {idx + 1}/{total}", " ".join(all_texts))
 
@@ -588,14 +776,15 @@ class ASREngine:
             total_chars = sum(len(s) for s in sentences)
             cursor_ms = start_ms
 
+            region_segments: list[Segment] = []
             for s_idx, sentence in enumerate(sentences):
                 proportion = len(sentence) / total_chars if total_chars > 0 else 1.0
                 s_end = cursor_ms + int(seg_duration_ms * proportion)
                 if s_idx == len(sentences) - 1:
                     s_end = end_ms
-                all_segments.append(
+                region_segments.append(
                     Segment(
-                        index=len(all_segments),
+                        index=len(all_segments) + len(region_segments),
                         start_ms=cursor_ms,
                         end_ms=s_end,
                         text=sentence,
@@ -603,23 +792,30 @@ class ASREngine:
                 )
                 cursor_ms = s_end
 
-        all_segments, final_text = self._enhance_output(all_segments)
+            # First deterministic enhancement pass before the LLM sees text.
+            region_segments = enhance_segments(region_segments, options)
+            all_segments.extend(region_segments)
+            if corrector is not None:
+                corrector.add(region_segments)
 
+        raw_text = enhance_text(" ".join(s.text for s in all_segments), options)
         if progress_cb:
-            progress_cb(0.95, "转写完成", final_text)
+            progress_cb(0.92, "转写完成", raw_text)
 
-        # Post-correction: one-shot full-text correction via API
-        if self._correction_engine is not None and all_segments:
-            if progress_cb:
-                progress_cb(0.96, "智能纠错中…", final_text)
-            all_segments, final_text = self._post_correct(all_segments, progress_cb)
-            all_segments, final_text = self._enhance_output(all_segments)
+        corrected = self._apply_streaming_correction(
+            all_segments, corrector, progress_cb, cancelled_checker
+        )
+        if corrected is not None:
+            all_segments, final_text = corrected
+        else:
+            final_text = raw_text
 
         if progress_cb:
             progress_cb(1.0, "完成", final_text)
 
         return TranscriptionResult(
-            text=final_text, segments=all_segments, duration_ms=duration_ms
+            text=final_text, segments=all_segments, duration_ms=duration_ms,
+            raw_text=raw_text,
         )
 
     def _transcribe_fixed_chunks(
@@ -630,9 +826,16 @@ class ASREngine:
         progress_cb: ProgressCallback | None,
         pause_event: asyncio.Event | None,
         cancelled_checker: Callable[[], bool] | None,
+        correction_cb: CorrectionProgressCallback | None = None,
     ) -> TranscriptionResult:
         """Fallback: fixed 30-second chunking when VAD is unavailable."""
         assert self._recognizer is not None
+
+        options = EnhancementOptions(
+            accuracy_mode=self._accuracy_mode,
+            domain_profile=self._domain_profile,
+        )
+        corrector = self._create_corrector(correction_cb)
 
         chunk_size = sample_rate * 30
         total_samples = len(samples)
@@ -666,20 +869,36 @@ class ASREngine:
             if chunk_text:
                 all_texts.append(chunk_text)
                 chunk_segs = self._create_segments(chunk_text, chunk_duration_ms)
+                # First deterministic enhancement pass before the LLM sees text.
+                chunk_segs = enhance_segments(chunk_segs, options)
                 for s in chunk_segs:
                     s.index = len(all_segments)
                     s.start_ms += current_offset_ms
                     s.end_ms += current_offset_ms
                     all_segments.append(s)
+                if corrector is not None:
+                    corrector.add(chunk_segs)
 
             current_offset_ms += chunk_duration_ms
 
-        all_segments, final_text = self._enhance_output(all_segments)
+        raw_text = enhance_text(" ".join(s.text for s in all_segments), options)
+        if progress_cb:
+            progress_cb(0.92, "转写完成", raw_text)
+
+        corrected = self._apply_streaming_correction(
+            all_segments, corrector, progress_cb, cancelled_checker
+        )
+        if corrected is not None:
+            all_segments, final_text = corrected
+        else:
+            final_text = raw_text
+
         if progress_cb:
             progress_cb(1.0, "完成", final_text)
 
         return TranscriptionResult(
-            text=final_text, segments=all_segments, duration_ms=duration_ms
+            text=final_text, segments=all_segments, duration_ms=duration_ms,
+            raw_text=raw_text,
         )
 
     def _enhance_output(self, segments: list[Segment]) -> tuple[list[Segment], str]:
@@ -739,95 +958,6 @@ class ASREngine:
         samples = np.frombuffer(raw_data, dtype=np.int16).astype(np.float32) / 32768.0
         return np.ascontiguousarray(samples), sample_rate
 
-    def _post_correct(
-        self,
-        segments: list[Segment],
-        progress_cb: ProgressCallback | None = None,
-    ) -> tuple[list[Segment], str]:
-        """One-shot full-text correction after transcription completes.
-
-        Sends all text to the correction engine in chunks of ~2000 chars.
-        Returns (corrected_segments, corrected_full_text).
-        """
-        assert self._correction_engine is not None
-
-        # Group segments into chunks sized for API correction.
-        chunks: list[list[Segment]] = []
-        current_chunk: list[Segment] = []
-        current_len = 0
-        for seg in segments:
-            current_chunk.append(seg)
-            current_len += len(seg.text)
-            if current_len >= CORRECTION_CHUNK_CHARS:
-                chunks.append(current_chunk)
-                current_chunk = []
-                current_len = 0
-        if current_chunk:
-            chunks.append(current_chunk)
-
-        contexts: list[str] = []
-        preceding = ""
-        for chunk in chunks:
-            contexts.append(preceding[-500:])
-            preceding += "".join(seg.text for seg in chunk)
-            if len(preceding) > 500:
-                preceding = preceding[-500:]
-
-        def correct_chunk(
-            i: int, chunk: list[Segment], context: str
-        ) -> tuple[int, list[str]]:
-            texts = [s.text for s in chunk]
-            try:
-                corrected = self._correction_engine.correct(
-                    texts, preceding_text=context
-                )
-                print(f"[CORRECTION] 纠错 {i + 1}/{len(chunks)} 完成", flush=True)
-            except Exception as exc:
-                print(f"[CORRECTION] 纠错异常: {exc}", flush=True)
-                corrected = texts
-            if len(corrected) != len(texts):
-                corrected = texts
-            return i, corrected
-
-        corrected_text_chunks: list[list[str] | None] = [None] * len(chunks)
-        completed = 0
-        max_workers = min(MAX_PARALLEL_CORRECTIONS, len(chunks))
-
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = [
-                pool.submit(correct_chunk, i, chunk, contexts[i])
-                for i, chunk in enumerate(chunks)
-            ]
-            for future in as_completed(futures):
-                chunk_idx, corrected = future.result()
-                corrected_text_chunks[chunk_idx] = corrected
-                completed += 1
-                if progress_cb:
-                    ratio = completed / len(chunks)
-                    progress_cb(
-                        0.96 + 0.03 * ratio,
-                        f"智能纠错中 {completed}/{len(chunks)}",
-                        _join_completed_correction_chunks(
-                            chunks, corrected_text_chunks
-                        ),
-                    )
-
-        corrected_segments: list[Segment] = []
-        for chunk, corrected in zip(chunks, corrected_text_chunks):
-            corrected = corrected or [seg.text for seg in chunk]
-            for seg, ct in zip(chunk, corrected):
-                corrected_segments.append(
-                    Segment(
-                        index=len(corrected_segments),
-                        start_ms=seg.start_ms,
-                        end_ms=seg.end_ms,
-                        text=ct,
-                    )
-                )
-
-        final_text = " ".join(s.text for s in corrected_segments).strip()
-        return corrected_segments, final_text
-
     def _create_segments(self, text: str, duration_ms: int) -> list[Segment]:
         """Split text into segments with estimated timestamps."""
         sentences = _split_sentences(text) or ([text.strip()] if text.strip() else [])
@@ -885,15 +1015,3 @@ def probe_duration_ms(audio_path: Path) -> int:
     except ValueError as exc:
         raise RuntimeError("无法解析音频时长") from exc
     return int(seconds * 1000)
-
-
-def _join_completed_correction_chunks(
-    chunks: list[list[Segment]],
-    corrected_text_chunks: list[list[str] | None],
-) -> str:
-    texts: list[str] = []
-    for chunk, corrected in zip(chunks, corrected_text_chunks):
-        if corrected is None:
-            break
-        texts.extend(corrected[: len(chunk)])
-    return " ".join(texts).strip()
