@@ -19,10 +19,22 @@ import sherpa_onnx
 
 try:
     from transcript_enhancer import EnhancementOptions, enhance_segments, enhance_text
-    from asr_models import DEFAULT_ASR_MODEL_ID, is_sherpa_model, sanitize_model_id
+    from asr_models import (
+        DEFAULT_ASR_MODEL_ID,
+        ASRModelManager,
+        get_model_spec,
+        is_sherpa_model,
+        sanitize_model_id,
+    )
 except ImportError:
     from .transcript_enhancer import EnhancementOptions, enhance_segments, enhance_text
-    from .asr_models import DEFAULT_ASR_MODEL_ID, is_sherpa_model, sanitize_model_id
+    from .asr_models import (
+        DEFAULT_ASR_MODEL_ID,
+        ASRModelManager,
+        get_model_spec,
+        is_sherpa_model,
+        sanitize_model_id,
+    )
 
 
 def _subprocess_kwargs() -> dict:
@@ -386,7 +398,7 @@ class ASREngine:
         return self._download_progress, self._download_message
 
     async def ensure_model(self) -> None:
-        """Load sherpa-onnx SenseVoice model."""
+        """Load the sherpa-onnx model for the selected ASR model."""
         async with self._model_lock:
             if self._recognizer is not None:
                 self._download_progress = 1.0
@@ -414,31 +426,52 @@ class ASREngine:
 
     def _load_model_sync(self) -> None:
         """Synchronously load the sherpa-onnx recognizer."""
-        model_dir = self.get_model_cache_dir()
-        model_name = "model.int8.onnx" if self._use_int8 else "model.onnx"
-        model_path = os.path.join(model_dir, model_name)
-        tokens_path = os.path.join(model_dir, "tokens.txt")
+        spec = get_model_spec(self._asr_model)
+        if spec.provider == "sherpa" and spec.arch == "fire_red_asr":
+            model_dir = str(ASRModelManager().model_dir(spec.id))
+            encoder_path = os.path.join(model_dir, "encoder.int8.onnx")
+            decoder_path = os.path.join(model_dir, "decoder.int8.onnx")
+            tokens_path = os.path.join(model_dir, "tokens.txt")
 
-        if not os.path.exists(model_path):
-            raise RuntimeError(
-                f"模型文件不存在: {model_path}\n" f"请先下载模型到 {model_dir}"
+            for path in (encoder_path, decoder_path, tokens_path):
+                if not os.path.exists(path):
+                    raise RuntimeError(
+                        f"模型文件不存在: {path}\n请先在设置里下载 {spec.label}"
+                    )
+
+            self._recognizer = sherpa_onnx.OfflineRecognizer.from_fire_red_asr(
+                encoder=encoder_path,
+                decoder=decoder_path,
+                tokens=tokens_path,
+                num_threads=self._num_threads,
+                provider="cpu",
             )
+        else:
+            model_dir = self.get_model_cache_dir()
+            model_name = "model.int8.onnx" if self._use_int8 else "model.onnx"
+            model_path = os.path.join(model_dir, model_name)
+            tokens_path = os.path.join(model_dir, "tokens.txt")
 
-        if not os.path.exists(tokens_path):
-            raise RuntimeError(f"tokens.txt 不存在: {tokens_path}")
+            if not os.path.exists(model_path):
+                raise RuntimeError(
+                    f"模型文件不存在: {model_path}\n" f"请先下载模型到 {model_dir}"
+                )
 
-        self._recognizer = sherpa_onnx.OfflineRecognizer.from_sense_voice(
-            model=model_path,
-            tokens=tokens_path,
-            num_threads=self._num_threads,
-            language=self._language,
-            use_itn=True,
-            provider="cpu",
-        )
+            if not os.path.exists(tokens_path):
+                raise RuntimeError(f"tokens.txt 不存在: {tokens_path}")
+
+            self._recognizer = sherpa_onnx.OfflineRecognizer.from_sense_voice(
+                model=model_path,
+                tokens=tokens_path,
+                num_threads=self._num_threads,
+                language=self._language,
+                use_itn=True,
+                provider="cpu",
+            )
 
         # Load Silero VAD for intelligent speech segmentation
         # Check bundled location first (PyInstaller), then default cache
-        vad_path = os.path.join(model_dir, "silero_vad.onnx")
+        vad_path = os.path.join(self.get_model_cache_dir(), "silero_vad.onnx")
         if not os.path.exists(vad_path):
             vad_path = DEFAULT_VAD_MODEL
         if os.path.exists(vad_path):

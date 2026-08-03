@@ -29,6 +29,7 @@ class ASRModelSpec:
     hf_repo_id: str | None = None
     recommended: bool = False
     experimental: bool = False
+    arch: str = "sense_voice"
 
 
 MODEL_SPECS: tuple[ASRModelSpec, ...] = (
@@ -44,6 +45,22 @@ MODEL_SPECS: tuple[ASRModelSpec, ...] = (
         repo_id="sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17",
         hub="sherpa",
         recommended=True,
+    ),
+    ASRModelSpec(
+        id="firered-asr-sherpa-2025",
+        label="FireRedASR Large INT8",
+        provider="sherpa",
+        description="FireRedASR-AED-L 的 sherpa-onnx 版（中英双语），中文准确率优于 SenseVoice，速度中等。",
+        size_hint="~1.74 GB",
+        estimated_size_bytes=1_740_000_000,
+        dependency="内置 sherpa-onnx",
+        source="ModelScope / Hugging Face",
+        repo_id="csukuangfj/sherpa-onnx-fire-red-asr-large-zh_en-2025-02-16",
+        hub="modelscope",
+        hf_repo_id="csukuangfj/sherpa-onnx-fire-red-asr-large-zh_en-2025-02-16",
+        recommended=True,
+        experimental=True,
+        arch="fire_red_asr",
     ),
     ASRModelSpec(
         id="qwen3-asr-0.6b",
@@ -249,7 +266,7 @@ class ASRModelManager:
         progress_cb: Callable[[float, str], None] | None = None,
     ) -> Path:
         spec = get_model_spec(model_id)
-        if spec.provider == "sherpa":
+        if spec.id == DEFAULT_ASR_MODEL_ID:
             raise RuntimeError("SenseVoice 默认模型请使用现有模型下载入口。")
 
         target = self.model_dir(spec.id)
@@ -295,7 +312,7 @@ class ASRModelManager:
 
     def delete_model(self, model_id: str) -> Path:
         spec = get_model_spec(model_id)
-        if spec.provider == "sherpa":
+        if spec.id == DEFAULT_ASR_MODEL_ID:
             raise RuntimeError("默认 SenseVoice 模型请使用现有模型入口管理。")
 
         target = self.model_dir(spec.id)
