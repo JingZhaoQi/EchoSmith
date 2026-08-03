@@ -1,12 +1,15 @@
-// Media workspace UI: source controls plus one unified transcript result panel.
+// Media workspace UI: task library + source intake + dual transcript panels.
 import { useEffect, useState } from "react";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 
 import { useTheme } from "../hooks/useTheme";
 import { BatchTaskComposer } from "../components/BatchTaskComposer";
+import { CorrectedPanel } from "../components/CorrectedPanel";
+import { RawTranscriptPanel } from "../components/RawTranscriptPanel";
 import { SettingsPanel } from "../components/SettingsPanel";
+import { TaskLibraryPanel } from "../components/TaskLibraryPanel";
+import { TaskStreamPanel } from "../components/TaskStreamPanel";
 import { UrlTaskComposer } from "../components/UrlTaskComposer";
-import { TranscriptPanel } from "../components/TranscriptPanel";
 import { Button } from "../components/ui/button";
 import { MoonIcon, SettingsIcon, SparklesIcon, SunIcon } from "lucide-react";
 import { ensureBackendBase, fetchSettings, listTasks } from "../lib/api";
@@ -18,11 +21,11 @@ const queryClient = new QueryClient();
 
 const logoUrl = new URL('../../echo_logo.svg', import.meta.url).href;
 
-type LeftTab = "batch" | "url";
+type SourceTab = "batch" | "url";
 
 function AppShell(): JSX.Element {
   const [theme, setTheme] = useTheme();
-  const [leftTab, setLeftTab] = useState<LeftTab>("batch");
+  const [sourceTab, setSourceTab] = useState<SourceTab>("batch");
   const [showSettings, setShowSettings] = useState(false);
   const [correctionActive, setCorrectionActive] = useState(false);
   const [systemDark, setSystemDark] = useState(() =>
@@ -118,25 +121,29 @@ function AppShell(): JSX.Element {
           </div>
         </header>
 
-        <main className="grid min-h-0 flex-1 grid-cols-1 gap-4 p-4 lg:grid-cols-[minmax(360px,460px)_minmax(0,1fr)] xl:gap-5 xl:p-5">
-          <section className="flex min-h-0 flex-col gap-4 overflow-hidden">
+        <main className="grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-y-auto p-4 lg:grid-cols-[260px_minmax(360px,420px)_minmax(0,1fr)] lg:overflow-hidden xl:gap-5 xl:p-5">
+          <section className="min-h-[240px] lg:min-h-0">
+            <TaskLibraryPanel />
+          </section>
+
+          <section className="flex min-h-0 flex-col gap-4 lg:overflow-y-auto">
             <div className="relative flex flex-shrink-0 rounded-2xl border border-white/60 bg-white/40 p-1 shadow-sm dark:border-white/[0.08] dark:bg-white/[0.05]">
               <div
                 className="absolute top-1 bottom-1 rounded-xl bg-white shadow-sm transition-transform duration-200 ease-out dark:bg-white/[0.10]"
                 style={{
                   width: "calc(50% - 4px)",
-                  transform: leftTab === "batch" ? "translateX(0)" : "translateX(calc(100% + 8px))",
+                  transform: sourceTab === "batch" ? "translateX(0)" : "translateX(calc(100% + 8px))",
                 }}
               />
               {([
-                { key: "batch" as LeftTab, label: "本地批量" },
-                { key: "url" as LeftTab, label: "在线视频" },
+                { key: "batch" as SourceTab, label: "本地批量" },
+                { key: "url" as SourceTab, label: "在线视频" },
               ]).map(({ key, label }) => (
                 <button
                   key={key}
-                  onClick={() => setLeftTab(key)}
+                  onClick={() => setSourceTab(key)}
                   className={`relative z-10 flex-1 rounded-xl px-4 py-2 text-sm font-medium transition-colors duration-200 ${
-                    leftTab === key
+                    sourceTab === key
                       ? "text-slate-950 dark:text-white"
                       : "text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100"
                   }`}
@@ -146,13 +153,22 @@ function AppShell(): JSX.Element {
               ))}
             </div>
 
-            <div className="min-h-0 flex-1 overflow-y-auto">
-              {leftTab === "batch" ? <BatchTaskComposer /> : <UrlTaskComposer />}
+            <div className="min-h-0 flex-1">
+              {sourceTab === "batch" ? <BatchTaskComposer /> : <UrlTaskComposer />}
+            </div>
+
+            <div className="liquid-panel flex-shrink-0 px-4 pb-4">
+              <TaskStreamPanel />
             </div>
           </section>
 
-          <section className="min-h-0">
-            <TranscriptPanel correctionActive={correctionActive} />
+          <section className="grid min-h-[480px] grid-rows-2 gap-4 lg:min-h-0">
+            <div className="min-h-0">
+              <RawTranscriptPanel />
+            </div>
+            <div className="min-h-0">
+              <CorrectedPanel correctionActive={correctionActive} />
+            </div>
           </section>
         </main>
 
@@ -165,19 +181,6 @@ function AppShell(): JSX.Element {
           />
         )}
       </div>
-
-      <style>{`
-        @keyframes slide-in-left {
-          from { opacity: 0; transform: translateX(-20px); }
-          to { opacity: 1; transform: translateX(0); }
-        }
-        @keyframes slide-in-right {
-          from { opacity: 0; transform: translateX(20px); }
-          to { opacity: 1; transform: translateX(0); }
-        }
-        .animate-slide-in-left { animation: slide-in-left 0.5s ease-out; }
-        .animate-slide-in-right { animation: slide-in-right 0.5s ease-out 0.1s both; }
-      `}</style>
     </AuroraBackground>
   );
 }
