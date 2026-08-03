@@ -14,14 +14,19 @@
 ## 特性
 
 - **完全离线** — 本地运行，无需联网，数据不出本机
-- **极速转录** — RTF ~0.042，1 小时音频约 2.5 分钟完成
+- **多模型可选** — 默认 SenseVoice INT8（sherpa-onnx），可选 Qwen3-ASR 0.6B/1.7B 与 FunASR 系列本地模型，设置内直接下载切换
+- **极速转录** — SenseVoice 路径 RTF ~0.042，1 小时音频约 2.5 分钟完成
+- **智能纠错** — 接入大模型 API（OpenAI / DeepSeek / 豆包 / Anthropic）修正同音字与术语错误；边转边纠，纠错与转写并行进行，结果逐批回填
+- **原文对照** — ASR 原文与纠错结果双面板独立显示，各有进度条
+- **任务库** — 三栏工作区：任务队列与历史、媒体输入、结果审阅，一目了然
+- **准确率模式** — 快速 / 均衡 / 高准确率三档，支持讲道、学术、会议、技术等领域词库与替换规则
 - **智能分句** — Silero VAD 语音活动检测，按语音停顿自动断句
 - **批量处理** — 多文件批量转写，自动导出到源文件目录
 - **URL 下载** — 粘贴链接直接下载并转写（基于 yt-dlp）
 - **实时进度** — WebSocket 推送转录进度和中间结果
 - **多格式导出** — TXT、SRT 字幕、JSON 三种格式
 - **跨平台** — 支持 macOS（Intel / Apple Silicon）和 Windows
-- **现代界面** — 毛玻璃质感 UI，支持浅色 / 深色模式
+- **现代界面** — 液态玻璃质感 UI，支持浅色 / 深色 / 跟随系统
 
 ## 性能
 
@@ -127,7 +132,8 @@ cd tauri && npm run build
 | 前端 | React 18 + TypeScript + TailwindCSS + Vite |
 | 状态管理 | Zustand |
 | 后端 | FastAPI + uvicorn |
-| ASR 引擎 | sherpa-onnx + SenseVoice INT8 |
+| ASR 引擎 | sherpa-onnx + SenseVoice INT8（默认）；可选 Qwen3-ASR / FunASR |
+| 文本纠错 | 大模型云 API（OpenAI 兼容 / Anthropic），流式并发纠错 |
 | 语音分段 | Silero VAD |
 | 音视频处理 | FFmpeg（内置） |
 | URL 下载 | yt-dlp |

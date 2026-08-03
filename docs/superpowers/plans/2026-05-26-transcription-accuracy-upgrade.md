@@ -16,7 +16,7 @@
 - Create: `backend/transcript_enhancer.py`
 - Test: `backend/tests/test_transcript_enhancer.py`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Cover:
 - Chinese segment spaces are removed.
@@ -25,11 +25,11 @@ Cover:
 - Fast mode skips filler cleanup.
 - Balanced mode removes standalone filler tokens conservatively.
 
-- [ ] **Step 2: Run tests and confirm failure**
+- [x] **Step 2: Run tests and confirm failure**
 
 Run: `python3 -m pytest backend/tests/test_transcript_enhancer.py -q`
 
-- [ ] **Step 3: Implement enhancer**
+- [x] **Step 3: Implement enhancer**
 
 Implement:
 - `EnhancementOptions`
@@ -38,7 +38,7 @@ Implement:
 - `enhance_segments`
 - domain profiles for `general`, `sermon`, `academic`, `meeting`, `tech`
 
-- [ ] **Step 4: Run targeted tests**
+- [x] **Step 4: Run targeted tests**
 
 Run: `python3 -m pytest backend/tests/test_transcript_enhancer.py -q`
 
@@ -48,7 +48,7 @@ Run: `python3 -m pytest backend/tests/test_transcript_enhancer.py -q`
 - Modify: `backend/settings.py`
 - Test: `backend/tests/test_settings.py`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Cover:
 - default `transcription.accuracy_mode == "balanced"`
@@ -56,15 +56,15 @@ Cover:
 - updating transcription settings persists and reloads
 - invalid values fall back to safe defaults
 
-- [ ] **Step 2: Run tests and confirm failure**
+- [x] **Step 2: Run tests and confirm failure**
 
 Run: `python3 -m pytest backend/tests/test_settings.py -q`
 
-- [ ] **Step 3: Implement settings changes**
+- [x] **Step 3: Implement settings changes**
 
 Add `TranscriptionConfig`, load/save/snapshot support, and `update_transcription()`.
 
-- [ ] **Step 4: Run targeted tests**
+- [x] **Step 4: Run targeted tests**
 
 Run: `python3 -m pytest backend/tests/test_settings.py -q`
 
@@ -77,22 +77,22 @@ Run: `python3 -m pytest backend/tests/test_settings.py -q`
 - Test: `backend/tests/test_correction_engine.py`
 - Test: `backend/tests/test_asr_engine.py`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Cover:
 - correction prompt includes domain/accuracy context.
 - ASR engine chooses no ffmpeg filter in fast mode.
 - ASR engine chooses a mild audio filter in balanced/accurate modes.
 
-- [ ] **Step 2: Run tests and confirm failure**
+- [x] **Step 2: Run tests and confirm failure**
 
 Run: `python3 -m pytest backend/tests/test_correction_engine.py backend/tests/test_asr_engine.py -q`
 
-- [ ] **Step 3: Implement pipeline changes**
+- [x] **Step 3: Implement pipeline changes**
 
 Add `set_transcription_options()` to `ASREngine`, enhancer calls around correction, app settings update handling, and correction prompt context.
 
-- [ ] **Step 4: Run targeted tests**
+- [x] **Step 4: Run targeted tests**
 
 Run: `python3 -m pytest backend/tests/test_correction_engine.py backend/tests/test_asr_engine.py -q`
 
@@ -102,15 +102,15 @@ Run: `python3 -m pytest backend/tests/test_correction_engine.py backend/tests/te
 - Modify: `backend/default_hotwords.json`
 - Test: `backend/tests/test_hotwords.py`
 
-- [ ] **Step 1: Write or adjust tests**
+- [x] **Step 1: Write or adjust tests**
 
 Verify the default file is valid JSON and includes useful domain terms.
 
-- [ ] **Step 2: Update built-in hotwords**
+- [x] **Step 2: Update built-in hotwords**
 
 Seed sermon/theology and technical terms without making the list too large.
 
-- [ ] **Step 3: Run hotword tests**
+- [x] **Step 3: Run hotword tests**
 
 Run: `python3 -m pytest backend/tests/test_hotwords.py -q`
 
@@ -120,15 +120,15 @@ Run: `python3 -m pytest backend/tests/test_hotwords.py -q`
 - Modify: `frontend/src/lib/api.ts`
 - Modify: `frontend/src/components/SettingsPanel.tsx`
 
-- [ ] **Step 1: Add TypeScript API types**
+- [x] **Step 1: Add TypeScript API types**
 
 Add `TranscriptionConfig` and include it in `AppSettings`.
 
-- [ ] **Step 2: Add settings controls**
+- [x] **Step 2: Add settings controls**
 
 Add accuracy mode and domain profile controls to the existing settings panel.
 
-- [ ] **Step 3: Build frontend**
+- [x] **Step 3: Build frontend**
 
 Run: `npm run build` in `frontend`.
 
@@ -137,14 +137,14 @@ Run: `npm run build` in `frontend`.
 **Files:**
 - No new files.
 
-- [ ] **Step 1: Run backend test suite**
+- [x] **Step 1: Run backend test suite**
 
 Run: `python3 -m pytest backend/tests`
 
-- [ ] **Step 2: Run frontend build**
+- [x] **Step 2: Run frontend build**
 
 Run: `npm run build` in `frontend`.
 
-- [ ] **Step 3: Open local UI in browser**
+- [x] **Step 3: Open local UI in browser**
 
 Start backend and frontend, open `http://127.0.0.1:5173/`, verify nonblank UI and settings controls.

@@ -16,9 +16,9 @@
 - Create: `backend/asr_models.py`
 - Test: `backend/tests/test_asr_models.py`
 
-- [ ] Write failing tests for catalog IDs, default model, install status, and selected state.
-- [ ] Implement static model specs and an `ASRModelManager`.
-- [ ] Run `python3 -m pytest backend/tests/test_asr_models.py -q`.
+- [x] Write failing tests for catalog IDs, default model, install status, and selected state.
+- [x] Implement static model specs and an `ASRModelManager`.
+- [x] Run `python3 -m pytest backend/tests/test_asr_models.py -q`.
 
 ### Task 2: Settings Selection
 
@@ -26,9 +26,9 @@
 - Modify: `backend/settings.py`
 - Test: `backend/tests/test_settings.py`
 
-- [ ] Add failing tests for `transcription.asr_model` default, persistence, and invalid fallback.
-- [ ] Add `asr_model` to `TranscriptionConfig`.
-- [ ] Run `python3 -m pytest backend/tests/test_settings.py -q`.
+- [x] Add failing tests for `transcription.asr_model` default, persistence, and invalid fallback.
+- [x] Add `asr_model` to `TranscriptionConfig`.
+- [x] Run `python3 -m pytest backend/tests/test_settings.py -q`.
 
 ### Task 3: Optional Provider Adapters
 
@@ -36,9 +36,9 @@
 - Create: `backend/asr_providers.py`
 - Test: `backend/tests/test_asr_providers.py`
 
-- [ ] Write tests for Qwen3-ASR and FunASR missing dependency errors.
-- [ ] Implement provider dispatch and result normalization.
-- [ ] Run `python3 -m pytest backend/tests/test_asr_providers.py -q`.
+- [x] Write tests for Qwen3-ASR and FunASR missing dependency errors.
+- [x] Implement provider dispatch and result normalization.
+- [x] Run `python3 -m pytest backend/tests/test_asr_providers.py -q`.
 
 ### Task 4: Backend API and Engine Routing
 
@@ -47,9 +47,9 @@
 - Modify: `backend/asr_engine.py`
 - Test: `backend/tests/test_asr_engine.py`
 
-- [ ] Add tests for model option sanitization and external model routing.
-- [ ] Add `/api/asr/models`, `/api/asr/models/{model_id}/download`, and model selection plumbing.
-- [ ] Run targeted backend tests.
+- [x] Add tests for model option sanitization and external model routing.
+- [x] Add `/api/asr/models`, `/api/asr/models/{model_id}/download`, and model selection plumbing.
+- [x] Run targeted backend tests.
 
 ### Task 5: Settings UI
 
@@ -57,12 +57,12 @@
 - Modify: `frontend/src/lib/api.ts`
 - Modify: `frontend/src/components/SettingsPanel.tsx`
 
-- [ ] Add API types and functions for ASR model statuses/download.
-- [ ] Add local model picker and download controls.
-- [ ] Run `npm run build` in `frontend`.
+- [x] Add API types and functions for ASR model statuses/download.
+- [x] Add local model picker and download controls.
+- [x] Run `npm run build` in `frontend`.
 
 ### Task 6: Final Verification
 
-- [ ] Run `python3 -m pytest backend/tests -q`.
-- [ ] Run `npm run build` in `frontend`.
-- [ ] Start backend/frontend and verify settings UI in browser.
+- [x] Run `python3 -m pytest backend/tests -q`.
+- [x] Run `npm run build` in `frontend`.
+- [x] Start backend/frontend and verify settings UI in browser.
