@@ -205,6 +205,32 @@ def _douyin_resolve_video_id(url: str) -> str:
     raise RuntimeError(f"无法从抖音链接中提取视频 ID: {url}")
 
 
+def _douyin_ttwid() -> str:
+    """Register an anonymous ttwid cookie.
+
+    Since 2026 the share page only embeds video data when a ttwid is present.
+    """
+    r = requests.post(
+        "https://ttwid.bytedance.com/ttwid/union/register/",
+        json={
+            "region": "cn",
+            "aid": 1768,
+            "needFid": False,
+            "service": "www.ixigua.com",
+            "migrate_info": {"ticket": "", "source": "node"},
+            "cbUrlProtocol": "https",
+            "union": True,
+        },
+        headers={"User-Agent": _DOUYIN_MOBILE_UA},
+        timeout=10,
+    )
+    r.raise_for_status()
+    ttwid = r.cookies.get("ttwid")
+    if not ttwid:
+        raise RuntimeError("无法获取抖音访问凭证 (ttwid)")
+    return ttwid
+
+
 def _douyin_fetch_video_info(video_id: str) -> dict:
     """Fetch video metadata from Douyin mobile share page."""
     headers = {
@@ -214,6 +240,7 @@ def _douyin_fetch_video_info(video_id: str) -> dict:
     r = requests.get(
         f"https://www.iesdouyin.com/share/video/{video_id}/",
         headers=headers,
+        cookies={"ttwid": _douyin_ttwid()},
         timeout=15,
     )
     r.raise_for_status()
