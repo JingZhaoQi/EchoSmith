@@ -31,6 +31,7 @@ def _subprocess_kwargs() -> dict:
         kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
     return kwargs
 
+
 log = logging.getLogger(__name__)
 
 DOWNLOAD_DIR = Path(tempfile.gettempdir()) / "echosmith_uploads"
@@ -245,9 +246,7 @@ def _douyin_fetch_video_info(video_id: str) -> dict:
     )
     r.raise_for_status()
 
-    m = re.search(
-        r"window\._ROUTER_DATA\s*=\s*({.*?})\s*</script>", r.text, re.DOTALL
-    )
+    m = re.search(r"window\._ROUTER_DATA\s*=\s*({.*?})\s*</script>", r.text, re.DOTALL)
     if not m:
         raise RuntimeError("无法解析抖音页面数据")
 
@@ -256,9 +255,7 @@ def _douyin_fetch_video_info(video_id: str) -> dict:
     s = json.dumps(page_data, ensure_ascii=False)
 
     # Extract play URL
-    play_match = re.search(
-        r'"play_addr".*?"url_list"\s*:\s*\[(.*?)\]', s, re.DOTALL
-    )
+    play_match = re.search(r'"play_addr".*?"url_list"\s*:\s*\[(.*?)\]', s, re.DOTALL)
     if not play_match:
         raise RuntimeError("无法获取抖音视频播放地址")
     urls = json.loads("[" + play_match.group(1) + "]")
@@ -328,8 +325,16 @@ def _douyin_download(
     # Convert to WAV using ffmpeg
     wav_path = DOWNLOAD_DIR / f"{task_id}.wav"
     cmd = [
-        "ffmpeg", "-y", "-nostdin", "-i", str(mp4_path),
-        "-ac", "1", "-ar", "16000", str(wav_path),
+        "ffmpeg",
+        "-y",
+        "-nostdin",
+        "-i",
+        str(mp4_path),
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        str(wav_path),
     ]
     result = subprocess.run(cmd, **_subprocess_kwargs())
     mp4_path.unlink(missing_ok=True)
@@ -356,7 +361,10 @@ ProgressCb = Optional[Callable[[float, str], None]]
 
 
 def download_media(
-    url: str, save_dir: str, mode: str = "video", progress_cb: ProgressCb = None,
+    url: str,
+    save_dir: str,
+    mode: str = "video",
+    progress_cb: ProgressCb = None,
 ) -> dict:
     """Download video or audio-only to *save_dir*. Returns {filename, path}."""
     save_path = Path(save_dir)
@@ -369,7 +377,10 @@ def download_media(
 
 
 def _ytdlp_download_media(
-    url: str, save_path: Path, mode: str, progress_cb: ProgressCb = None,
+    url: str,
+    save_path: Path,
+    mode: str,
+    progress_cb: ProgressCb = None,
 ) -> dict:
     """Download via yt-dlp to save_path."""
     tmp_id = uuid.uuid4().hex[:8]
@@ -455,7 +466,10 @@ def _ytdlp_attempt_opts(base_opts: dict):
 
 
 def _douyin_download_media(
-    url: str, save_path: Path, mode: str, progress_cb: ProgressCb = None,
+    url: str,
+    save_path: Path,
+    mode: str,
+    progress_cb: ProgressCb = None,
 ) -> dict:
     """Download Douyin video or audio to save_path."""
     if progress_cb:
@@ -496,8 +510,17 @@ def _douyin_download_media(
         # Extract audio to mp3
         mp3_path = mp4_path.with_suffix(".mp3")
         cmd = [
-            "ffmpeg", "-y", "-nostdin", "-i", str(mp4_path),
-            "-vn", "-acodec", "libmp3lame", "-q:a", "0", str(mp3_path),
+            "ffmpeg",
+            "-y",
+            "-nostdin",
+            "-i",
+            str(mp4_path),
+            "-vn",
+            "-acodec",
+            "libmp3lame",
+            "-q:a",
+            "0",
+            str(mp3_path),
         ]
         result = subprocess.run(cmd, **_subprocess_kwargs())
         mp4_path.unlink(missing_ok=True)

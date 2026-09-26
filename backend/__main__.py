@@ -20,6 +20,7 @@ if getattr(sys, "frozen", False):
     # Bundled Python can't find system CA certs; use certifi's CA bundle.
     try:
         import certifi
+
         os.environ["SSL_CERT_FILE"] = certifi.where()
         os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()
         print(f"[INIT] SSL_CERT_FILE set to: {certifi.where()}")
@@ -41,7 +42,9 @@ if getattr(sys, "frozen", False):
     else:
         # Fall back to system PATH with common locations (platform-aware)
         if sys.platform == "win32":
-            additional_paths: list[str] = []  # Windows relies on system PATH / installer
+            additional_paths: list[str] = (
+                []
+            )  # Windows relies on system PATH / installer
         else:
             additional_paths = [
                 "/opt/homebrew/bin",  # Homebrew on Apple Silicon
