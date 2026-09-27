@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
+import time
 from pathlib import Path
 
 import uvicorn
@@ -77,7 +79,22 @@ else:
     except ImportError:
         from backend.app import app
 
+
+def _exit_when_orphaned(interval: float = 2.0) -> None:
+    """Exit once the launching app is gone (crash, force quit, missed cleanup).
+
+    On Unix an orphan is re-parented, so getppid() changes.
+    """
+    # ponytail: Unix only; on Windows getppid() never changes, the app's kill covers it
+    parent = os.getppid()
+    while os.getppid() == parent:
+        time.sleep(interval)
+    os._exit(0)
+
+
 if __name__ == "__main__":
+    if sys.platform != "win32":
+        threading.Thread(target=_exit_when_orphaned, daemon=True).start()
     port = int(os.environ.get("ECHOSMITH_PORT", "5179"))
     host = os.environ.get("ECHOSMITH_HOST", "127.0.0.1")
     uvicorn.run(app, host=host, port=port, log_level="info")
