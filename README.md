@@ -14,7 +14,7 @@
 ## 特性
 
 - **完全离线** — 本地运行，无需联网，数据不出本机
-- **多模型可选** — 默认 SenseVoice INT8（sherpa-onnx），可选 Qwen3-ASR 0.6B/1.7B 与 FunASR 系列本地模型，设置内直接下载切换
+- **本地识别** — SenseVoice INT8（sherpa-onnx）离线转写，模型首次运行自动下载
 - **极速转录** — SenseVoice 路径 RTF ~0.042，1 小时音频约 2.5 分钟完成
 - **智能纠错** — 接入大模型 API（OpenAI / DeepSeek / 豆包 / Anthropic）修正同音字与术语错误；边转边纠，纠错与转写并行进行，结果逐批回填
 - **原文对照** — ASR 原文与纠错结果双面板独立显示，各有进度条
@@ -132,7 +132,7 @@ cd tauri && npm run build
 | 前端 | React 18 + TypeScript + TailwindCSS + Vite |
 | 状态管理 | Zustand |
 | 后端 | FastAPI + uvicorn |
-| ASR 引擎 | sherpa-onnx + SenseVoice INT8（默认）；可选 Qwen3-ASR / FunASR |
+| ASR 引擎 | sherpa-onnx + SenseVoice INT8 |
 | 文本纠错 | 大模型云 API（OpenAI 兼容 / Anthropic），流式并发纠错 |
 | 语音分段 | Silero VAD |
 | 音视频处理 | FFmpeg（内置） |

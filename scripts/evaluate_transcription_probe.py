@@ -62,14 +62,6 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Use the configured app correction API key and force cloud_api mode.",
     )
-    parser.add_argument(
-        "--accuracy-mode", default="accurate", choices=["fast", "balanced", "accurate"]
-    )
-    parser.add_argument(
-        "--domain-profile",
-        default="sermon",
-        choices=["general", "sermon", "academic", "meeting", "tech"],
-    )
     parser.add_argument("--asr-model", default=DEFAULT_ASR_MODEL_ID)
     parser.add_argument("--min-accuracy", type=float, default=0.95)
     parser.add_argument("--min-chars-per-min", type=float, default=2000)
@@ -108,8 +100,6 @@ def build_cloud_correction_engine(args: argparse.Namespace) -> CorrectionEngine 
         api_key=cfg.api_key,
         api_model=cfg.api_model,
         api_base_url=cfg.api_base_url,
-        accuracy_mode=args.accuracy_mode,
-        domain_profile=args.domain_profile,
     )
 
 
@@ -120,8 +110,6 @@ async def transcribe_audio(args: argparse.Namespace) -> tuple[str, float, int]:
     engine = ASREngine(
         language=args.language,
         correction_engine=build_cloud_correction_engine(args),
-        accuracy_mode=args.accuracy_mode,
-        domain_profile=args.domain_profile,
         asr_model=args.asr_model,
     )
 

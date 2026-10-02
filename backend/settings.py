@@ -6,16 +6,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 
-VALID_ACCURACY_MODES = {"fast", "balanced", "accurate"}
-VALID_DOMAIN_PROFILES = {"general", "sermon", "academic", "meeting", "tech"}
-VALID_ASR_MODELS = {
-    "sensevoice-sherpa-2024",
-    "qwen3-asr-0.6b",
-    "qwen3-asr-1.7b",
-    "funasr-sensevoice-small",
-    "funasr-paraformer-zh",
-    "funasr-nano",
-}
+VALID_ASR_MODELS = {"sensevoice-sherpa-2024"}
 DEFAULT_ASR_MODEL = "sensevoice-sherpa-2024"
 
 
@@ -30,8 +21,6 @@ class CorrectionConfig:
 
 @dataclass
 class TranscriptionConfig:
-    accuracy_mode: str = "balanced"
-    domain_profile: str = "general"
     asr_model: str = DEFAULT_ASR_MODEL
 
 
@@ -62,12 +51,6 @@ class SettingsManager:
             data = json.loads(self._path.read_text(encoding="utf-8"))
             transcription_data = data.get("transcription", {})
             self._settings.transcription = TranscriptionConfig(
-                accuracy_mode=self._sanitize_accuracy_mode(
-                    transcription_data.get("accuracy_mode", "balanced")
-                ),
-                domain_profile=self._sanitize_domain_profile(
-                    transcription_data.get("domain_profile", "general")
-                ),
                 asr_model=self._sanitize_asr_model(
                     transcription_data.get("asr_model", DEFAULT_ASR_MODEL)
                 ),
@@ -100,14 +83,6 @@ class SettingsManager:
         return self._settings
 
     def update_transcription(self, **kwargs) -> TranscriptionConfig:
-        if "accuracy_mode" in kwargs:
-            self._settings.transcription.accuracy_mode = self._sanitize_accuracy_mode(
-                kwargs["accuracy_mode"]
-            )
-        if "domain_profile" in kwargs:
-            self._settings.transcription.domain_profile = self._sanitize_domain_profile(
-                kwargs["domain_profile"]
-            )
         if "asr_model" in kwargs:
             self._settings.transcription.asr_model = self._sanitize_asr_model(
                 kwargs["asr_model"]
@@ -143,14 +118,6 @@ class SettingsManager:
         else:
             data["correction"]["api_key_set"] = False
         return data
-
-    @staticmethod
-    def _sanitize_accuracy_mode(value: object) -> str:
-        return value if isinstance(value, str) and value in VALID_ACCURACY_MODES else "balanced"
-
-    @staticmethod
-    def _sanitize_domain_profile(value: object) -> str:
-        return value if isinstance(value, str) and value in VALID_DOMAIN_PROFILES else "general"
 
     @staticmethod
     def _sanitize_asr_model(value: object) -> str:

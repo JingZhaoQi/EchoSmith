@@ -18,23 +18,11 @@ import numpy as np
 import sherpa_onnx
 
 try:
-    from transcript_enhancer import EnhancementOptions, enhance_segments, enhance_text
-    from asr_models import (
-        DEFAULT_ASR_MODEL_ID,
-        ASRModelManager,
-        get_model_spec,
-        is_sherpa_model,
-        sanitize_model_id,
-    )
+    from transcript_enhancer import enhance_segments, enhance_text
+    from asr_models import DEFAULT_ASR_MODEL_ID, sanitize_model_id
 except ImportError:
-    from .transcript_enhancer import EnhancementOptions, enhance_segments, enhance_text
-    from .asr_models import (
-        DEFAULT_ASR_MODEL_ID,
-        ASRModelManager,
-        get_model_spec,
-        is_sherpa_model,
-        sanitize_model_id,
-    )
+    from .transcript_enhancer import enhance_segments, enhance_text
+    from .asr_models import DEFAULT_ASR_MODEL_ID, sanitize_model_id
 
 
 def _subprocess_kwargs() -> dict:
@@ -61,8 +49,20 @@ def _subprocess_kwargs() -> dict:
 
 
 MODEL_CARD = "SenseVoice INT8 (sherpa-onnx)"
-VALID_ACCURACY_MODES = {"fast", "balanced", "accurate"}
-VALID_DOMAIN_PROFILES = {"general", "sermon", "academic", "meeting", "tech"}
+
+# ffmpeg audio cleanup applied before recognition.
+# loudnorm was dropped: it internally resamples to 192kHz and took ~90s on a
+# 76-minute file. Instead we measure integrated loudness with ebur128 (fast)
+# and apply a static gain + true-peak limiter, which lands within ~0.5 LU of
+# the loudnorm output while running ~9x faster.
+LOUDNESS_TARGET_LUFS = -16.0
+TRUE_PEAK_LIMIT = 0.841  # -1.5 dBTP
+MAX_LOUDNESS_GAIN_DB = 24.0  # avoid amplifying noise floor on very quiet audio
+AUDIO_FILTER = (
+    "highpass=f=80,lowpass=f=7800,"
+    "volume={gain}dB,"
+    f"alimiter=limit={TRUE_PEAK_LIMIT}:level=false"
+)
 
 # Default model directory (platform-aware, matches download_models.py)
 if platform.system() == "Windows":
@@ -128,21 +128,14 @@ def _split_sentences(text: str) -> list[str]:
     return sentences
 
 
-def _audio_filter_for_accuracy_mode(accuracy_mode: str) -> str | None:
-    """Return ffmpeg audio filter for the requested accuracy mode."""
-    if accuracy_mode == "fast":
-        return None
-    if accuracy_mode in {"balanced", "accurate"}:
-        return "highpass=f=80,lowpass=f=7800,loudnorm=I=-16:TP=-1.5:LRA=11"
-    return "highpass=f=80,lowpass=f=7800,loudnorm=I=-16:TP=-1.5:LRA=11"
-
-
 class StreamingCorrector:
     """Overlap LLM correction with transcription.
 
     Segments accumulate until roughly CORRECTION_CHUNK_CHARS characters,
     then each batch is submitted for concurrent correction while
-    transcription continues. Results merge back in original order and
+    transcription continues. Each batch is corrected as one coherent block
+    of prose (no per-segment alignment, so the model can repair sentences
+    broken across VAD boundaries); blocks merge back in original order and
     fall back to the raw text whenever a batch fails.
     """
 
@@ -158,7 +151,7 @@ class StreamingCorrector:
         self._pool = ThreadPoolExecutor(max_workers=max_workers)
         self._on_progress = on_progress
         self._batches: list[list[Segment]] = []
-        self._results: list[list[str] | None] = []
+        self._results: list[str | None] = []
         self._futures: list[Future] = []
         self._buffer: list[Segment] = []
         self._buffer_chars = 0
@@ -197,11 +190,11 @@ class StreamingCorrector:
         texts = [seg.text for seg in batch]
         try:
             corrected = self._engine.correct(texts, preceding_text=context)
-            if len(corrected) != len(texts):
-                corrected = texts
         except Exception as exc:  # noqa: BLE001
             print(f"[CORRECTION] 批次 {batch_idx + 1} 异常: {exc}", flush=True)
-            corrected = texts
+            corrected = ""
+        if not corrected or not corrected.strip():
+            corrected = " ".join(texts)
         with self._lock:
             self._results[batch_idx] = corrected
             self._done += 1
@@ -218,14 +211,14 @@ class StreamingCorrector:
         for result in self._results:
             if result is None:
                 break
-            texts.extend(result)
-        return " ".join(texts).strip()
+            texts.append(result)
+        return "\n".join(texts).strip()
 
-    def finish(self, cancelled: bool = False) -> list[str] | None:
+    def finish(self, cancelled: bool = False) -> str | None:
         """Flush the remaining buffer and wait for in-flight batches.
 
-        Returns one corrected text per added segment in original order,
-        or None when cancelled (caller should fall back to raw text).
+        Returns the corrected text merged in original batch order, or None
+        when cancelled (caller should fall back to raw text).
         """
         if cancelled:
             self._pool.shutdown(wait=False, cancel_futures=True)
@@ -236,10 +229,12 @@ class StreamingCorrector:
         self._pool.shutdown(wait=True)
         merged: list[str] = []
         for batch, result in zip(self._batches, self._results):
-            merged.extend(
-                result if result is not None else [seg.text for seg in batch]
+            merged.append(
+                result
+                if result is not None
+                else " ".join(seg.text for seg in batch)
             )
-        return merged
+        return "\n".join(merged).strip()
 
 
 class ASREngine:
@@ -295,8 +290,6 @@ class ASREngine:
         use_int8: bool = True,
         language: str = "zh",
         correction_engine=None,  # CorrectionEngine | None
-        accuracy_mode: str = "balanced",
-        domain_profile: str = "general",
         asr_model: str = DEFAULT_ASR_MODEL_ID,
     ) -> None:
         self._recognizer: sherpa_onnx.OfflineRecognizer | None = None
@@ -311,18 +304,8 @@ class ASREngine:
         self._use_int8 = use_int8
         self._language = language if language in self.SUPPORTED_LANGUAGES else "zh"
         self._correction_engine = correction_engine
-        self._accuracy_mode = "balanced"
-        self._domain_profile = "general"
         self._asr_model = DEFAULT_ASR_MODEL_ID
-        self.set_transcription_options(accuracy_mode, domain_profile, asr_model)
-
-    @property
-    def accuracy_mode(self) -> str:
-        return self._accuracy_mode
-
-    @property
-    def domain_profile(self) -> str:
-        return self._domain_profile
+        self.set_transcription_options(asr_model)
 
     @property
     def asr_model(self) -> str:
@@ -330,24 +313,9 @@ class ASREngine:
 
     def set_transcription_options(
         self,
-        accuracy_mode: str,
-        domain_profile: str,
         asr_model: str = DEFAULT_ASR_MODEL_ID,
     ) -> None:
-        self._accuracy_mode = (
-            accuracy_mode if accuracy_mode in VALID_ACCURACY_MODES else "balanced"
-        )
-        self._domain_profile = (
-            domain_profile if domain_profile in VALID_DOMAIN_PROFILES else "general"
-        )
         self._asr_model = sanitize_model_id(asr_model)
-        if self._correction_engine is not None and hasattr(
-            self._correction_engine, "set_transcription_context"
-        ):
-            self._correction_engine.set_transcription_context(
-                accuracy_mode=self._accuracy_mode,
-                domain_profile=self._domain_profile,
-            )
 
     def get_model_cache_dir(self) -> str:
         """Get the directory where models will be cached."""
@@ -368,8 +336,6 @@ class ASREngine:
 
     def has_model(self) -> bool:
         """Return whether the model has been loaded."""
-        if not is_sherpa_model(self._asr_model):
-            return True
         return self._recognizer is not None
 
     async def set_language(self, language: str) -> None:
@@ -425,49 +391,28 @@ class ASREngine:
                 self._model_downloading = False
 
     def _load_model_sync(self) -> None:
-        """Synchronously load the sherpa-onnx recognizer."""
-        spec = get_model_spec(self._asr_model)
-        if spec.provider == "sherpa" and spec.arch == "fire_red_asr":
-            model_dir = str(ASRModelManager().model_dir(spec.id))
-            encoder_path = os.path.join(model_dir, "encoder.int8.onnx")
-            decoder_path = os.path.join(model_dir, "decoder.int8.onnx")
-            tokens_path = os.path.join(model_dir, "tokens.txt")
+        """Synchronously load the sherpa-onnx SenseVoice recognizer."""
+        model_dir = self.get_model_cache_dir()
+        model_name = "model.int8.onnx" if self._use_int8 else "model.onnx"
+        model_path = os.path.join(model_dir, model_name)
+        tokens_path = os.path.join(model_dir, "tokens.txt")
 
-            for path in (encoder_path, decoder_path, tokens_path):
-                if not os.path.exists(path):
-                    raise RuntimeError(
-                        f"模型文件不存在: {path}\n请先在设置里下载 {spec.label}"
-                    )
-
-            self._recognizer = sherpa_onnx.OfflineRecognizer.from_fire_red_asr(
-                encoder=encoder_path,
-                decoder=decoder_path,
-                tokens=tokens_path,
-                num_threads=self._num_threads,
-                provider="cpu",
+        if not os.path.exists(model_path):
+            raise RuntimeError(
+                f"模型文件不存在: {model_path}\n" f"请先下载模型到 {model_dir}"
             )
-        else:
-            model_dir = self.get_model_cache_dir()
-            model_name = "model.int8.onnx" if self._use_int8 else "model.onnx"
-            model_path = os.path.join(model_dir, model_name)
-            tokens_path = os.path.join(model_dir, "tokens.txt")
 
-            if not os.path.exists(model_path):
-                raise RuntimeError(
-                    f"模型文件不存在: {model_path}\n" f"请先下载模型到 {model_dir}"
-                )
+        if not os.path.exists(tokens_path):
+            raise RuntimeError(f"tokens.txt 不存在: {tokens_path}")
 
-            if not os.path.exists(tokens_path):
-                raise RuntimeError(f"tokens.txt 不存在: {tokens_path}")
-
-            self._recognizer = sherpa_onnx.OfflineRecognizer.from_sense_voice(
-                model=model_path,
-                tokens=tokens_path,
-                num_threads=self._num_threads,
-                language=self._language,
-                use_itn=True,
-                provider="cpu",
-            )
+        self._recognizer = sherpa_onnx.OfflineRecognizer.from_sense_voice(
+            model=model_path,
+            tokens=tokens_path,
+            num_threads=self._num_threads,
+            language=self._language,
+            use_itn=True,
+            provider="cpu",
+        )
 
         # Load Silero VAD for intelligent speech segmentation
         # Check bundled location first (PyInstaller), then default cache
@@ -495,8 +440,7 @@ class ASREngine:
         cancelled_checker: Callable[[], bool] | None = None,
         correction_cb: CorrectionProgressCallback | None = None,
     ) -> TranscriptionResult:
-        if is_sherpa_model(self._asr_model):
-            await self.ensure_model()
+        await self.ensure_model()
         return await asyncio.to_thread(
             self._transcribe_sync,
             audio_path,
@@ -587,16 +531,6 @@ class ASREngine:
         wav_path = self._ensure_wav_format(audio_path)
 
         try:
-            if not is_sherpa_model(self._asr_model):
-                return self._transcribe_external(
-                    wav_path,
-                    duration_ms,
-                    progress_cb,
-                    pause_event,
-                    cancelled_checker,
-                    correction_cb,
-                )
-
             assert self._recognizer is not None
 
             if progress_cb:
@@ -629,76 +563,6 @@ class ASREngine:
             if wav_path != audio_path and wav_path.exists():
                 wav_path.unlink(missing_ok=True)
 
-    def _transcribe_external(
-        self,
-        audio_path: Path,
-        duration_ms: int,
-        progress_cb: ProgressCallback | None,
-        pause_event: asyncio.Event | None,
-        cancelled_checker: Callable[[], bool] | None,
-        correction_cb: CorrectionProgressCallback | None = None,
-    ) -> TranscriptionResult:
-        if progress_cb:
-            progress_cb(0.12, "准备本地识别模型", "")
-        try:
-            from asr_providers import transcribe_with_external_provider
-        except ImportError:
-            from .asr_providers import transcribe_with_external_provider
-
-        hotwords: list[str] = []
-        if self._correction_engine is not None:
-            hotwords = list(getattr(self._correction_engine, "_hot_words", []))
-
-        options = EnhancementOptions(
-            accuracy_mode=self._accuracy_mode,
-            domain_profile=self._domain_profile,
-        )
-        corrector = self._create_corrector(correction_cb)
-
-        def provider_progress(provider_value: float, stage: str, partial: str) -> None:
-            if not progress_cb:
-                return
-            clamped = min(max(provider_value, 0.0), 1.0)
-            progress_cb(0.15 + 0.70 * clamped, stage, partial)
-
-        def provider_cancelled() -> bool:
-            return self._check_interrupted(pause_event, cancelled_checker)
-
-        def provider_segments(new_segments: list[Segment]) -> None:
-            if corrector is not None:
-                corrector.add(enhance_segments(new_segments, options))
-
-        result = transcribe_with_external_provider(
-            model_id=self._asr_model,
-            audio_path=audio_path,
-            duration_ms=duration_ms,
-            language=self._language,
-            hotwords=hotwords,
-            progress_cb=provider_progress,
-            cancelled_checker=provider_cancelled,
-            segments_cb=provider_segments if corrector is not None else None,
-        )
-        if provider_cancelled():
-            if corrector is not None:
-                corrector.finish(cancelled=True)
-            return result
-        segments, raw_text = self._enhance_output(result.segments)
-        if progress_cb:
-            progress_cb(0.9, "转写完成", raw_text)
-        corrected = self._apply_streaming_correction(
-            segments, corrector, progress_cb, cancelled_checker
-        )
-        if corrected is not None:
-            segments, final_text = corrected
-        else:
-            final_text = raw_text
-        if progress_cb:
-            progress_cb(1.0, "完成", final_text)
-        return TranscriptionResult(
-            text=final_text, segments=segments, duration_ms=duration_ms,
-            raw_text=raw_text,
-        )
-
     def _create_corrector(
         self,
         correction_cb: CorrectionProgressCallback | None,
@@ -721,8 +585,11 @@ class ASREngine:
     ) -> tuple[list[Segment], str] | None:
         """Wait for streamed correction and merge results in order.
 
-        Returns (corrected_segments, corrected_text), or None when there
-        is nothing to merge (no corrector / no segments / cancelled).
+        Returns (segments, corrected_text), or None when there is nothing
+        to merge (no corrector / no segments / cancelled). Segments keep
+        their raw per-fragment text: the corrected prose is re-punctuated
+        across fragment boundaries, so it cannot be mapped back onto the
+        original timeline and is delivered as one coherent text instead.
         """
         if corrector is None:
             return None
@@ -732,21 +599,10 @@ class ASREngine:
         if progress_cb:
             progress_cb(0.93, "智能纠错收尾中…", " ".join(s.text for s in segments))
         cancelled = bool(cancelled_checker and cancelled_checker())
-        corrected_texts = corrector.finish(cancelled=cancelled)
-        if corrected_texts is None:
+        corrected_text = corrector.finish(cancelled=cancelled)
+        if corrected_text is None:
             return None
-        corrected_segments = [
-            Segment(
-                index=index,
-                start_ms=seg.start_ms,
-                end_ms=seg.end_ms,
-                text=corrected_text,
-            )
-            for index, (seg, corrected_text) in enumerate(
-                zip(segments, corrected_texts)
-            )
-        ]
-        return self._enhance_output(corrected_segments)
+        return segments, corrected_text
 
     def _transcribe_with_vad(
         self,
@@ -773,10 +629,6 @@ class ASREngine:
                 progress_cb(1.0, "完成", "")
             return TranscriptionResult(text="", segments=[], duration_ms=duration_ms)
 
-        options = EnhancementOptions(
-            accuracy_mode=self._accuracy_mode,
-            domain_profile=self._domain_profile,
-        )
         corrector = self._create_corrector(correction_cb)
 
         all_texts: list[str] = []
@@ -826,12 +678,12 @@ class ASREngine:
                 cursor_ms = s_end
 
             # First deterministic enhancement pass before the LLM sees text.
-            region_segments = enhance_segments(region_segments, options)
+            region_segments = enhance_segments(region_segments)
             all_segments.extend(region_segments)
             if corrector is not None:
                 corrector.add(region_segments)
 
-        raw_text = enhance_text(" ".join(s.text for s in all_segments), options)
+        raw_text = enhance_text(" ".join(s.text for s in all_segments))
         if progress_cb:
             progress_cb(0.92, "转写完成", raw_text)
 
@@ -864,10 +716,6 @@ class ASREngine:
         """Fallback: fixed 30-second chunking when VAD is unavailable."""
         assert self._recognizer is not None
 
-        options = EnhancementOptions(
-            accuracy_mode=self._accuracy_mode,
-            domain_profile=self._domain_profile,
-        )
         corrector = self._create_corrector(correction_cb)
 
         chunk_size = sample_rate * 30
@@ -903,7 +751,7 @@ class ASREngine:
                 all_texts.append(chunk_text)
                 chunk_segs = self._create_segments(chunk_text, chunk_duration_ms)
                 # First deterministic enhancement pass before the LLM sees text.
-                chunk_segs = enhance_segments(chunk_segs, options)
+                chunk_segs = enhance_segments(chunk_segs)
                 for s in chunk_segs:
                     s.index = len(all_segments)
                     s.start_ms += current_offset_ms
@@ -914,7 +762,7 @@ class ASREngine:
 
             current_offset_ms += chunk_duration_ms
 
-        raw_text = enhance_text(" ".join(s.text for s in all_segments), options)
+        raw_text = enhance_text(" ".join(s.text for s in all_segments))
         if progress_cb:
             progress_cb(0.92, "转写完成", raw_text)
 
@@ -935,33 +783,19 @@ class ASREngine:
         )
 
     def _enhance_output(self, segments: list[Segment]) -> tuple[list[Segment], str]:
-        options = EnhancementOptions(
-            accuracy_mode=self._accuracy_mode,
-            domain_profile=self._domain_profile,
-        )
-        enhanced_segments = enhance_segments(segments, options)
-        final_text = enhance_text(" ".join(s.text for s in enhanced_segments), options)
+        enhanced_segments = enhance_segments(segments)
+        final_text = enhance_text(" ".join(s.text for s in enhanced_segments))
         return enhanced_segments, final_text
 
     def _ensure_wav_format(self, audio_path: Path) -> Path:
-        """Convert audio to 16kHz mono WAV if needed."""
-        audio_filter = _audio_filter_for_accuracy_mode(self._accuracy_mode)
-        # If already a WAV file, check format
-        if audio_filter is None and audio_path.suffix.lower() == ".wav":
-            try:
-                with wave.open(str(audio_path), "rb") as wf:
-                    if wf.getnchannels() == 1 and wf.getframerate() == 16000:
-                        return audio_path
-            except Exception:
-                pass
-
-        # Convert using ffmpeg
+        """Convert audio to loudness-normalized 16kHz mono WAV."""
         import tempfile
 
         tmp_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
         tmp_path = Path(tmp_file.name)
         tmp_file.close()
 
+        gain_db = self._measure_loudness_gain(audio_path)
         cmd = [
             "ffmpeg",
             "-y",
@@ -972,15 +806,43 @@ class ASREngine:
             "1",
             "-ar",
             "16000",
+            "-af",
+            AUDIO_FILTER.format(gain=f"{gain_db:.1f}"),
         ]
-        if audio_filter:
-            cmd.extend(["-af", audio_filter])
         cmd.append(str(tmp_path))
         result = subprocess.run(cmd, **_subprocess_kwargs())
         if result.returncode != 0:
             raise RuntimeError(f"ffmpeg 转换失败: {result.stderr.strip()}")
 
         return tmp_path
+
+    @staticmethod
+    def _measure_loudness_gain(audio_path: Path) -> float:
+        """Measure integrated loudness (EBU R128) and return gain to target."""
+        cmd = [
+            "ffmpeg",
+            "-nostdin",
+            "-i",
+            str(audio_path),
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-af",
+            "highpass=f=80,lowpass=f=7800,ebur128",
+            "-f",
+            "null",
+            "-",
+        ]
+        result = subprocess.run(cmd, **_subprocess_kwargs())
+        matches = re.findall(r"I:\s*(-?[\d.]+) LUFS", result.stderr)
+        if not matches:
+            return 0.0
+        integrated = float(matches[-1])
+        if integrated <= -70.0:  # silence, nothing to normalize
+            return 0.0
+        gain = LOUDNESS_TARGET_LUFS - integrated
+        return max(-MAX_LOUDNESS_GAIN_DB, min(MAX_LOUDNESS_GAIN_DB, gain))
 
     def _read_wav(self, wav_path: Path) -> tuple[np.ndarray, int]:
         """Read WAV file and return contiguous float32 numpy array."""

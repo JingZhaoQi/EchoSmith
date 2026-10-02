@@ -222,44 +222,10 @@ export interface CorrectionConfig {
 }
 
 export interface TranscriptionConfig {
-  accuracy_mode: "fast" | "balanced" | "accurate";
-  domain_profile: "general" | "sermon" | "academic" | "meeting" | "tech";
   asr_model: ASRModelId;
 }
 
-export type ASRModelId =
-  | "sensevoice-sherpa-2024"
-  | "qwen3-asr-0.6b"
-  | "qwen3-asr-1.7b"
-  | "funasr-sensevoice-small"
-  | "funasr-paraformer-zh"
-  | "funasr-nano";
-
-export interface ASRModelStatus {
-  id: ASRModelId;
-  label: string;
-  provider: "sherpa" | "qwen3" | "funasr";
-  description: string;
-  size_hint: string;
-  estimated_size_bytes: number;
-  estimated_size_label: string;
-  dependency: string;
-  source: string;
-  repo_id: string;
-  hub: string;
-  hf_repo_id?: string | null;
-  recommended: boolean;
-  experimental: boolean;
-  installed: boolean;
-  installed_size_bytes: number;
-  installed_size_label: string;
-  selected: boolean;
-  path: string;
-  downloading: boolean;
-  download_progress: number;
-  download_message: string;
-  download_error: string;
-}
+export type ASRModelId = "sensevoice-sherpa-2024";
 
 export interface ApiUsageStats {
   total_calls: number;
@@ -310,62 +276,6 @@ export async function triggerCorrectionModelDownload(): Promise<{ status: string
   await ensureBackendBase();
   const response = await apiClient.post<{ status: string }>("/models/correction/download");
   return response.data;
-}
-
-export async function fetchASRModels(): Promise<ASRModelStatus[]> {
-  await ensureBackendBase();
-  const paths = ["/asr/models", "/asr-models", "/models/asr"];
-  for (const path of paths) {
-    try {
-      const response = await apiClient.get<{ models: ASRModelStatus[] }>(path);
-      return response.data.models;
-    } catch (error) {
-      if (!axios.isAxiosError(error) || error.response?.status !== 404) {
-        throw error;
-      }
-    }
-  }
-  throw new Error("当前后端不支持本地模型列表，请重启应用或重新启动后端。");
-}
-
-export async function downloadASRModel(modelId: ASRModelId): Promise<{ status: string; path?: string }> {
-  await ensureBackendBase();
-  const paths = [
-    `/asr/models/${modelId}/download`,
-    `/asr-models/${modelId}/download`,
-    `/models/asr/${modelId}/download`,
-  ];
-  for (const path of paths) {
-    try {
-      const response = await apiClient.post<{ status: string; path?: string }>(path);
-      return response.data;
-    } catch (error) {
-      if (!axios.isAxiosError(error) || error.response?.status !== 404) {
-        throw error;
-      }
-    }
-  }
-  throw new Error("当前后端不支持本地模型下载，请重启应用或重新启动后端。");
-}
-
-export async function deleteASRModel(modelId: ASRModelId): Promise<{ status: string; path?: string }> {
-  await ensureBackendBase();
-  const paths = [
-    `/asr/models/${modelId}`,
-    `/asr-models/${modelId}`,
-    `/models/asr/${modelId}`,
-  ];
-  for (const path of paths) {
-    try {
-      const response = await apiClient.delete<{ status: string; path?: string }>(path);
-      return response.data;
-    } catch (error) {
-      if (!axios.isAxiosError(error) || error.response?.status !== 404) {
-        throw error;
-      }
-    }
-  }
-  throw new Error("当前后端不支持删除本地模型，请重启应用或重新启动后端。");
 }
 
 export async function resetApiUsage(): Promise<AppSettings> {

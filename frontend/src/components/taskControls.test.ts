@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { getClearableTaskIds, getStoppableTaskIds } from "./taskControls";
+import { getStoppableTaskIds } from "./taskControls";
 import type { TaskSnapshot } from "../lib/api";
 
 const task = (id: string, status: TaskSnapshot["status"]): TaskSnapshot => ({
@@ -29,25 +29,5 @@ describe("task controls", () => {
     };
 
     expect(getStoppableTaskIds(tasks)).toEqual(["queued", "running", "paused"]);
-  });
-
-  it("clears every visible task including completed results", () => {
-    const tasks: Record<string, TaskSnapshot> = {
-      completed: task("completed", "completed"),
-      failed: task("failed", "failed"),
-      cancelled: task("cancelled", "cancelled"),
-      queued: task("queued", "queued"),
-      running: task("running", "running"),
-      paused: task("paused", "paused"),
-    };
-
-    expect(getClearableTaskIds(tasks)).toEqual([
-      "completed",
-      "failed",
-      "cancelled",
-      "queued",
-      "running",
-      "paused",
-    ]);
   });
 });

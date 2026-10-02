@@ -8,7 +8,6 @@ import { CorrectedPanel } from "../components/CorrectedPanel";
 import { RawTranscriptPanel } from "../components/RawTranscriptPanel";
 import { SettingsPanel } from "../components/SettingsPanel";
 import { TaskLibraryPanel } from "../components/TaskLibraryPanel";
-import { TaskStreamPanel } from "../components/TaskStreamPanel";
 import { UrlTaskComposer } from "../components/UrlTaskComposer";
 import { Button } from "../components/ui/button";
 import { MoonIcon, SettingsIcon, SparklesIcon, SunIcon } from "lucide-react";
@@ -155,10 +154,6 @@ function AppShell(): JSX.Element {
 
             <div className="min-h-0 flex-1">
               {sourceTab === "batch" ? <BatchTaskComposer /> : <UrlTaskComposer />}
-            </div>
-
-            <div className="liquid-panel flex-shrink-0 px-4 pb-4">
-              <TaskStreamPanel />
             </div>
           </section>
 

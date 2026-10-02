@@ -128,6 +128,8 @@ class TaskStore:
         try:
             while True:
                 item = await queue.get()
+                if item is None:  # task deleted, close the stream
+                    break
                 yield item
         finally:
             async with self._lock:

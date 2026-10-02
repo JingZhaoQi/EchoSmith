@@ -13,7 +13,6 @@ import uuid
 from pathlib import Path
 
 from fastapi import (
-    BackgroundTasks,
     Depends,
     FastAPI,
     File,
@@ -32,7 +31,6 @@ try:
     from correction_engine import CorrectionEngine
     from hotwords import HotwordManager
     from settings import SettingsManager
-    from asr_models import ASRModelManager
     from task_store import TaskRecord, TaskStatus, task_store
     from url_downloader import (
         download_audio,
@@ -45,7 +43,6 @@ except ImportError:
     from .correction_engine import CorrectionEngine
     from .hotwords import HotwordManager
     from .settings import SettingsManager
-    from .asr_models import ASRModelManager
     from .task_store import TaskRecord, TaskStatus, task_store
     from .url_downloader import (
         download_audio,
@@ -92,8 +89,6 @@ def _get_hotwords_path() -> Path:
 
 hotword_manager = HotwordManager(_get_hotwords_path())
 settings_manager = SettingsManager(_get_hotwords_path().parent / "settings.json")
-asr_model_manager = ASRModelManager()
-ASR_DOWNLOADS: dict[str, dict] = {}
 
 
 def _build_correction_engine() -> CorrectionEngine | None:
@@ -109,8 +104,6 @@ def _build_correction_engine() -> CorrectionEngine | None:
         api_model=cfg.api_model,
         api_base_url=cfg.api_base_url,
         on_api_call=lambda segs, failed: settings_manager.record_api_call(segs, failed),
-        accuracy_mode=settings.transcription.accuracy_mode,
-        domain_profile=settings.transcription.domain_profile,
     )
 
 
@@ -118,8 +111,6 @@ _correction_engine = _build_correction_engine()
 _settings = settings_manager.get()
 engine = ASREngine(
     correction_engine=_correction_engine,
-    accuracy_mode=_settings.transcription.accuracy_mode,
-    domain_profile=_settings.transcription.domain_profile,
     asr_model=_settings.transcription.asr_model,
 )
 API_TOKEN = os.environ.get("ECHOSMITH_TOKEN")
@@ -256,11 +247,7 @@ async def update_settings(request: Request, _: None = Depends(verify_token)) -> 
     _correction_engine = _build_correction_engine()
     engine._correction_engine = _correction_engine
     latest = settings_manager.get().transcription
-    engine.set_transcription_options(
-        latest.accuracy_mode,
-        latest.domain_profile,
-        latest.asr_model,
-    )
+    engine.set_transcription_options(latest.asr_model)
 
     return JSONResponse(settings_manager.snapshot())
 
@@ -269,114 +256,6 @@ async def update_settings(request: Request, _: None = Depends(verify_token)) -> 
 async def reset_usage(_: None = Depends(verify_token)) -> JSONResponse:
     settings_manager.reset_usage()
     return JSONResponse(settings_manager.snapshot())
-
-
-@app.get("/api/models/asr")
-@app.get("/api/asr-models")
-@app.get("/api/asr/models")
-async def list_asr_models(_: None = Depends(verify_token)) -> JSONResponse:
-    selected = settings_manager.get().transcription.asr_model
-    models = asr_model_manager.list_models(selected_model_id=selected)
-    for model in models:
-        state = ASR_DOWNLOADS.get(model["id"])
-        model["downloading"] = bool(state and state.get("status") == "running")
-        size_progress = 0.0
-        estimated_size = float(model.get("estimated_size_bytes") or 0)
-        local_size = float(model.get("installed_size_bytes") or 0)
-        if estimated_size > 0 and local_size > 0:
-            size_progress = min(local_size / estimated_size, 0.99)
-        state_progress = float(state.get("progress", 0.0)) if state else 0.0
-        model["download_progress"] = max(state_progress, size_progress) if model["downloading"] else size_progress
-        model["download_message"] = state.get("message", "") if state else ""
-        model["download_error"] = state.get("error", "") if state else ""
-    return JSONResponse({"models": models})
-
-
-@app.post("/api/models/asr/{model_id}/download")
-@app.post("/api/asr-models/{model_id}/download")
-@app.post("/api/asr/models/{model_id}/download")
-async def download_asr_model(
-    model_id: str,
-    background_tasks: BackgroundTasks,
-    _: None = Depends(verify_token),
-) -> JSONResponse:
-    try:
-        model_path = asr_model_manager.model_dir(model_id)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-    if asr_model_manager.is_installed(model_id):
-        return JSONResponse({"status": "already_exists", "path": str(model_path)})
-
-    state = ASR_DOWNLOADS.get(model_id)
-    if state and state.get("status") == "running":
-        return JSONResponse({"status": "already_downloading", "path": str(model_path)})
-
-    ASR_DOWNLOADS[model_id] = {
-        "status": "running",
-        "progress": 0.0,
-        "message": "准备下载",
-        "error": "",
-    }
-
-    def progress_cb(progress: float, message: str) -> None:
-        ASR_DOWNLOADS[model_id] = {
-            "status": "running",
-            "progress": progress,
-            "message": message,
-            "error": "",
-        }
-
-    def run_download() -> None:
-        try:
-            asr_model_manager.download_model(model_id, progress_cb=progress_cb)
-            ASR_DOWNLOADS[model_id] = {
-                "status": "completed",
-                "progress": 1.0,
-                "message": "下载完成",
-                "error": "",
-            }
-        except Exception as exc:  # noqa: BLE001
-            ASR_DOWNLOADS[model_id] = {
-                "status": "failed",
-                "progress": 0.0,
-                "message": "下载失败",
-                "error": str(exc),
-            }
-
-    background_tasks.add_task(run_download)
-    return JSONResponse({"status": "started", "path": str(model_path)})
-
-
-@app.delete("/api/models/asr/{model_id}")
-@app.delete("/api/asr-models/{model_id}")
-@app.delete("/api/asr/models/{model_id}")
-async def delete_asr_model(model_id: str, _: None = Depends(verify_token)) -> JSONResponse:
-    global _settings
-    state = ASR_DOWNLOADS.get(model_id)
-    if state and state.get("status") == "running":
-        raise HTTPException(status_code=409, detail="模型正在下载中，完成或失败后才能删除。")
-
-    try:
-        model_path = asr_model_manager.delete_model(model_id)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    ASR_DOWNLOADS.pop(model_id, None)
-
-    latest = settings_manager.get().transcription
-    if latest.asr_model == model_id:
-        settings_manager.update_transcription(asr_model="sensevoice-sherpa-2024")
-        _settings = settings_manager.get()
-        engine.set_transcription_options(
-            _settings.transcription.accuracy_mode,
-            _settings.transcription.domain_profile,
-            _settings.transcription.asr_model,
-        )
-
-    return JSONResponse({"status": "deleted", "path": str(model_path)})
 
 
 @app.get("/api/tasks")
@@ -725,11 +604,7 @@ async def _run_task(task_id: str, source_info: dict, cleanup_paths: list[str]) -
             engine._correction_engine.set_hot_words(hotword_manager.list_all())
 
         transcription = settings_manager.get().transcription
-        engine.set_transcription_options(
-            transcription.accuracy_mode,
-            transcription.domain_profile,
-            transcription.asr_model,
-        )
+        engine.set_transcription_options(transcription.asr_model)
 
         # For URL tasks, map transcription progress from 0.3 to 1.0
         if source_info.get("type") == "url":

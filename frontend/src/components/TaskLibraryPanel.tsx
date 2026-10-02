@@ -1,12 +1,40 @@
-// Task library: queue and history list with status counts and selection.
-import { useMemo } from "react";
-import { CheckCircle2Icon, CircleDashedIcon, FileAudioIcon, GlobeIcon, Loader2Icon, PauseCircleIcon, XCircleIcon } from "lucide-react";
+// Task library: queue and history list with per-task and global controls.
+import { useMemo, useState } from "react";
+import {
+  CheckCircle2Icon,
+  CircleDashedIcon,
+  FileAudioIcon,
+  GlobeIcon,
+  Loader2Icon,
+  PauseCircleIcon,
+  PauseIcon,
+  PlayIcon,
+  StopCircleIcon,
+  Trash2Icon,
+  XCircleIcon,
+  XIcon,
+} from "lucide-react";
 
+import { Button } from "./ui/button";
 import { useTasksStore } from "../hooks/useTasksStore";
+import { cancelTask, pauseTask, resumeTask } from "../lib/api";
 import type { TaskSnapshot, TaskStatus } from "../lib/api";
 import { STATUS_LABELS, getSourceLabel } from "../lib/constants";
+import { getStoppableTaskIds } from "./taskControls";
 
 const ACTIVE_STATUSES: TaskStatus[] = ["queued", "running", "paused"];
+
+async function cancelIgnoring404(taskId: string): Promise<void> {
+  try {
+    await cancelTask(taskId);
+  } catch (error: unknown) {
+    const status =
+      typeof error === "object" && error !== null && "response" in error
+        ? (error as { response?: { status?: number } }).response?.status
+        : undefined;
+    if (status !== 404) throw error;
+  }
+}
 
 function formatRelativeTime(timestamp: number): string {
   const seconds = Math.max(0, Date.now() / 1000 - timestamp);
@@ -34,16 +62,37 @@ function StatusIcon({ status }: { status: TaskStatus }): JSX.Element {
   }
 }
 
-function TaskRow({ task, active, onSelect }: { task: TaskSnapshot; active: boolean; onSelect: () => void }): JSX.Element {
+function TaskRow({
+  task,
+  active,
+  onSelect,
+  onPauseResume,
+  onRemove,
+}: {
+  task: TaskSnapshot;
+  active: boolean;
+  onSelect: () => void;
+  onPauseResume: () => void;
+  onRemove: () => void;
+}): JSX.Element {
   const isUrl = (task.source as Record<string, unknown>).type === "url";
   const name = getSourceLabel(task.source, 40) || task.id.slice(0, 8);
   const progressPct = Math.round((task.progress ?? 0) * 100);
+  const isPaused = task.status === "paused";
+  const showPauseResume = task.status === "running" || isPaused;
 
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onSelect}
-      className={`w-full rounded-2xl border px-3 py-2.5 text-left transition-colors ${
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onSelect();
+        }
+      }}
+      className={`group w-full cursor-pointer rounded-2xl border px-3 py-2.5 text-left transition-colors ${
         active
           ? "border-sky-500/40 bg-sky-500/10 dark:border-sky-400/30 dark:bg-sky-400/10"
           : "border-transparent hover:bg-white/50 dark:hover:bg-white/[0.06]"
@@ -55,8 +104,35 @@ function TaskRow({ task, active, onSelect }: { task: TaskSnapshot; active: boole
           {isUrl && <GlobeIcon className="mr-1 inline h-3 w-3 opacity-60" />}
           {name}
         </span>
-        <span className="flex-shrink-0 text-[10px] text-slate-400 dark:text-slate-500">
-          {formatRelativeTime(task.updated_at)}
+        <span className="flex flex-shrink-0 items-center gap-0.5">
+          {showPauseResume && (
+            <Button
+              variant="ghost"
+              size="icon"
+              title={isPaused ? "继续" : "暂停"}
+              aria-label={isPaused ? "继续" : "暂停"}
+              className="h-7 w-7 rounded-lg"
+              onClick={(event) => {
+                event.stopPropagation();
+                onPauseResume();
+              }}
+            >
+              {isPaused ? <PlayIcon className="h-4 w-4" /> : <PauseIcon className="h-4 w-4" />}
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            size="icon"
+            title="移除"
+            aria-label="移除"
+            className="h-7 w-7 rounded-lg"
+            onClick={(event) => {
+              event.stopPropagation();
+              onRemove();
+            }}
+          >
+            <XIcon className="h-4 w-4" />
+          </Button>
         </span>
       </div>
       <div className="mt-1.5 flex items-center gap-2 pl-6">
@@ -81,17 +157,27 @@ function TaskRow({ task, active, onSelect }: { task: TaskSnapshot; active: boole
             {task.error}
           </span>
         )}
+        {task.status !== "running" && (
+          <span className="ml-auto flex-shrink-0 text-[10px] text-slate-400 dark:text-slate-500">
+            {formatRelativeTime(task.updated_at)}
+          </span>
+        )}
       </div>
-    </button>
+    </div>
   );
 }
 
 export function TaskLibraryPanel(): JSX.Element {
-  const { tasks, activeTaskId, setActiveTask } = useTasksStore((state) => ({
-    tasks: state.tasks,
-    activeTaskId: state.activeTaskId,
-    setActiveTask: state.setActiveTask,
-  }));
+  const { tasks, activeTaskId, setActiveTask, removeTask, clearAllTasks, resetUserClearedFlag } =
+    useTasksStore((state) => ({
+      tasks: state.tasks,
+      activeTaskId: state.activeTaskId,
+      setActiveTask: state.setActiveTask,
+      removeTask: state.removeTask,
+      clearAllTasks: state.clearAllTasks,
+      resetUserClearedFlag: state.resetUserClearedFlag,
+    }));
+  const [busy, setBusy] = useState(false);
 
   const sortedTasks = useMemo(
     () => Object.values(tasks).sort((a, b) => b.created_at - a.created_at),
@@ -110,6 +196,65 @@ export function TaskLibraryPanel(): JSX.Element {
     return { active, completed, failed };
   }, [sortedTasks]);
 
+  const stoppableTaskIds = getStoppableTaskIds(tasks);
+  const hasTasks = sortedTasks.length > 0;
+
+  const handlePauseResume = async (task: TaskSnapshot) => {
+    try {
+      if (task.status === "paused") await resumeTask(task.id);
+      else await pauseTask(task.id);
+    } catch (error) {
+      console.error("Failed to pause/resume task:", error);
+      window.alert("操作失败，请稍后再试");
+    }
+  };
+
+  const handleRemove = async (task: TaskSnapshot) => {
+    try {
+      await cancelIgnoring404(task.id);
+      removeTask(task.id);
+    } catch (error) {
+      console.error("Failed to remove task:", error);
+      window.alert("移除任务失败，请稍后再试");
+    }
+  };
+
+  const handleStopAll = async () => {
+    setBusy(true);
+    try {
+      for (const taskId of stoppableTaskIds) {
+        try {
+          await cancelIgnoring404(taskId);
+        } catch (error) {
+          console.error(`Failed to cancel task ${taskId}:`, error);
+        }
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleClearAll = async () => {
+    const taskIds = Object.keys(tasks);
+    setBusy(true);
+    window.dispatchEvent(new CustomEvent("clearAllFiles"));
+    clearAllTasks();
+    let failed = false;
+    for (const taskId of taskIds) {
+      try {
+        await cancelIgnoring404(taskId);
+      } catch (error) {
+        failed = true;
+        console.error(`Failed to cancel task ${taskId}:`, error);
+      }
+    }
+    if (failed) {
+      window.alert("部分任务清空失败，请稍后再试");
+      resetUserClearedFlag();
+    }
+    setBusy(false);
+  };
+
   return (
     <aside className="liquid-panel flex h-full min-h-0 flex-col gap-3 p-4">
       <div>
@@ -120,6 +265,28 @@ export function TaskLibraryPanel(): JSX.Element {
           <span>完成 {counts.completed}</span>
           <span className="opacity-40">·</span>
           <span>失败/取消 {counts.failed}</span>
+        </div>
+        <div className="mt-2.5 grid grid-cols-2 gap-2">
+          <Button
+            variant="secondary"
+            size="sm"
+            className="gap-1.5"
+            disabled={stoppableTaskIds.length === 0 || busy}
+            onClick={handleStopAll}
+          >
+            <StopCircleIcon className="h-4 w-4" />
+            全部停止
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            className="gap-1.5"
+            disabled={!hasTasks || busy}
+            onClick={handleClearAll}
+          >
+            <Trash2Icon className="h-4 w-4" />
+            清空
+          </Button>
         </div>
       </div>
 
@@ -140,6 +307,8 @@ export function TaskLibraryPanel(): JSX.Element {
               task={task}
               active={task.id === activeTaskId}
               onSelect={() => setActiveTask(task.id)}
+              onPauseResume={() => void handlePauseResume(task)}
+              onRemove={() => void handleRemove(task)}
             />
           ))
         )}
