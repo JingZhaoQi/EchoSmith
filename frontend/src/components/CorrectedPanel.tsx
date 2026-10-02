@@ -7,7 +7,7 @@ import { Card } from "./ui/card";
 import { Progress } from "./ui/progress";
 import type { TaskSnapshot, TaskStatus } from "../lib/api";
 import { exportTask } from "../lib/api";
-import { STATUS_LABELS } from "../lib/constants";
+import { localizeBackendMessage, useLocaleStore, useT } from "../lib/i18n";
 import { useTasksStore } from "../hooks/useTasksStore";
 
 const FORMAT_LABELS: Array<{ format: "txt" | "srt" | "json"; label: string }> = [
@@ -43,6 +43,8 @@ export function CorrectedPanel({ correctionActive }: CorrectedPanelProps): JSX.E
   const [copying, setCopying] = useState(false);
   const [copied, setCopied] = useState(false);
   const resultRef = useRef<HTMLDivElement | null>(null);
+  const t = useT();
+  const locale = useLocaleStore((state) => state.locale);
 
   const isCompleted = task?.status === "completed";
   const isRunning = task?.status === "running";
@@ -113,12 +115,12 @@ export function CorrectedPanel({ correctionActive }: CorrectedPanelProps): JSX.E
   const canExport = Boolean(task && EXPORTABLE_STATUSES.includes(task.status));
 
   const statusText = (() => {
-    if (!correctionActive) return "未启用";
-    if (!task) return "等待任务";
-    if (isCompleted) return "智能纠错完成";
-    if (correctionStarted) return `${message || "智能纠错中"} · ${correctionProgress}%`;
-    if (isRunning) return "等待纠错开始";
-    return STATUS_LABELS[task.status] ?? task.status;
+    if (!correctionActive) return t.notEnabled;
+    if (!task) return t.waitingTask;
+    if (isCompleted) return t.correctionDone;
+    if (correctionStarted) return `${message ? localizeBackendMessage(message, locale) : t.correcting} · ${correctionProgress}%`;
+    if (isRunning) return t.waitingCorrection;
+    return t.status[task.status] ?? task.status;
   })();
 
   return (
@@ -128,10 +130,10 @@ export function CorrectedPanel({ correctionActive }: CorrectedPanelProps): JSX.E
           <SparklesIcon className={`h-4 w-4 flex-shrink-0 ${correctionActive ? "text-teal-600 dark:text-teal-300" : "text-slate-400 dark:text-slate-500"}`} />
           <div className="min-w-0">
             <h2 className="truncate text-sm font-semibold text-slate-950 dark:text-white">
-              智能纠错结果
+              {t.correctedTitle}
             </h2>
             <p className="truncate text-[11px] text-slate-500 dark:text-slate-400">
-              {correctionActive ? "大模型纠错文本，批次完成即更新" : "未配置 API Key，导出将使用 ASR 原文"}
+              {correctionActive ? t.correctedSubtitleOn : t.correctedSubtitleOff}
             </p>
           </div>
         </div>
@@ -163,12 +165,12 @@ export function CorrectedPanel({ correctionActive }: CorrectedPanelProps): JSX.E
             <SparklesIcon className="h-8 w-8 opacity-20" />
             <span className="px-4 text-center text-xs leading-5">
               {!correctionActive
-                ? "未启用智能纠错。在「设置」中配置大模型 API Key 后，这里会显示纠错结果。"
+                ? t.correctionDisabledHint
                 : !task
-                  ? "从任务库选择任务，或创建新任务。"
+                  ? t.selectOrCreateTask
                   : correctionStarted
-                    ? "纠错结果会显示在这里。"
-                    : "转写进行中，纠错结果会随批次完成逐步显示。"}
+                    ? t.correctedEmpty
+                    : t.correctedPending}
             </span>
           </div>
         )}
@@ -183,7 +185,7 @@ export function CorrectedPanel({ correctionActive }: CorrectedPanelProps): JSX.E
           onClick={handleCopy}
         >
           <CopyIcon className="h-3.5 w-3.5" />
-          {copied ? "已复制" : "复制"}
+          {copied ? t.copied : t.copy}
         </Button>
         <div className="flex-1" />
         {FORMAT_LABELS.map(({ format, label }) => (

@@ -15,34 +15,37 @@ import {
 import { Button } from "./ui/button";
 import { createTaskFromUrl, downloadMedia } from "../lib/api";
 import { useTasksStore } from "../hooks/useTasksStore";
+import { localizeBackendMessage, useLocaleStore, useT, type Messages } from "../lib/i18n";
 
 function extractUrl(text: string): string {
   const m = text.match(/https?:\/\/[^\s<>"']+/);
   return m ? m[0].replace(/[,.;:!?。，；：！？]+$/, "") : text.trim();
 }
 
-function detectPlatform(text: string): { name: string; hint: string } {
+function detectPlatform(text: string, t: Messages): { name: string; hint: string } {
   const value = text.toLowerCase();
-  if (!value.trim()) return { name: "等待链接", hint: "支持粘贴完整分享文本" };
+  if (!value.trim()) return { name: t.platformWaiting, hint: t.platformWaitingHint };
   if (value.includes("bilibili.com") || value.includes("b23.tv")) {
-    return { name: "Bilibili", hint: "已启用 B 站请求头、超时和重试策略" };
+    return { name: "Bilibili", hint: t.platformBilibiliHint };
   }
   if (value.includes("youtube.com") || value.includes("youtu.be")) {
-    return { name: "YouTube", hint: "如需登录视频，请先在浏览器登录" };
+    return { name: "YouTube", hint: t.platformYoutubeHint };
   }
   if (value.includes("douyin.com") || value.includes("iesdouyin.com")) {
-    return { name: "抖音", hint: "会自动解析分享文本中的短链接" };
+    return { name: t.platformDouyin, hint: t.platformDouyinHint };
   }
   if (value.includes("x.com") || value.includes("twitter.com")) {
-    return { name: "Twitter/X", hint: "公开媒体可直接下载，受限媒体需要登录状态" };
+    return { name: "Twitter/X", hint: t.platformXHint };
   }
-  return { name: "通用视频链接", hint: "由 yt-dlp 自动识别平台" };
+  return { name: t.platformGeneric, hint: t.platformGenericHint };
 }
 
 export function UrlTaskComposer(): JSX.Element {
   const [url, setUrl] = useState("");
   const [dlProgress, setDlProgress] = useState<{ ratio: number; message: string } | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const t = useT();
+  const locale = useLocaleStore((state) => state.locale);
 
   const upsertTask = useTasksStore((state) => state.upsertTask);
   const setActiveTask = useTasksStore((state) => state.setActiveTask);
@@ -82,14 +85,14 @@ export function UrlTaskComposer(): JSX.Element {
     mutationFn: async ({ rawUrl, mode }: { rawUrl: string; mode: "video" | "audio" }) => {
       const { downloadDir } = await import("@tauri-apps/api/path");
       const saveDir = await downloadDir();
-      setDlProgress({ ratio: 0, message: "准备下载…" });
+      setDlProgress({ ratio: 0, message: t.preparingDownload });
       return downloadMedia(rawUrl, saveDir, mode, (ratio, message) => {
         setDlProgress({ ratio, message });
       });
     },
     onSuccess: (data) => {
       setDlProgress(null);
-      showToast(`已保存到 Downloads 目录：${data.filename}`);
+      showToast(t.savedToDownloads(data.filename));
     },
     onError: () => {
       setDlProgress(null);
@@ -120,7 +123,7 @@ export function UrlTaskComposer(): JSX.Element {
 
   const canStart = url.trim().length > 0 && !mutation.isPending;
   const canDownload = url.trim().length > 0 && !dlMutation.isPending;
-  const platform = detectPlatform(url);
+  const platform = detectPlatform(url, t);
 
   return (
     <form
@@ -128,9 +131,9 @@ export function UrlTaskComposer(): JSX.Element {
       onSubmit={handleSubmit}
     >
       <div>
-        <h2 className="text-base font-semibold text-slate-950 dark:text-white">在线视频采集</h2>
+        <h2 className="text-base font-semibold text-slate-950 dark:text-white">{t.urlTitle}</h2>
         <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-          粘贴视频链接，自动下载音频并转写为文字
+          {t.urlSubtitle}
         </p>
       </div>
 
@@ -138,7 +141,7 @@ export function UrlTaskComposer(): JSX.Element {
       <div className="flex flex-col gap-4">
         <div>
           <label className="mb-2 block text-sm font-medium text-slate-900 dark:text-white">
-            视频链接
+            {t.videoLink}
           </label>
           <div className="flex gap-2">
             <div className="relative flex-1">
@@ -147,7 +150,7 @@ export function UrlTaskComposer(): JSX.Element {
                 type="text"
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
-                placeholder="粘贴视频链接或分享文本…"
+                placeholder={t.urlPlaceholder}
                 className="glass-field w-full rounded-2xl py-2.5 pl-9 pr-3 text-sm placeholder:text-slate-400 transition-all focus:outline-none focus:ring-2 focus:ring-sky-500/30 dark:placeholder:text-slate-500"
               />
             </div>
@@ -155,7 +158,7 @@ export function UrlTaskComposer(): JSX.Element {
               type="button"
               onClick={handlePaste}
               className="glass-field rounded-2xl px-3 py-2.5 text-slate-600 transition-colors hover:bg-white/70 dark:text-slate-300 dark:hover:bg-white/[0.10]"
-              title="从剪贴板粘贴"
+              title={t.pasteFromClipboard}
             >
               <ClipboardPasteIcon className="h-4 w-4" />
             </button>
@@ -184,7 +187,7 @@ export function UrlTaskComposer(): JSX.Element {
           <div className="flex items-center gap-2 rounded-2xl border border-sky-500/10 bg-sky-500/5 px-4 py-3 dark:bg-sky-400/5">
             <div className="h-4 w-4 flex-shrink-0 animate-spin rounded-full border-2 border-sky-500 border-t-transparent" />
             <p className="text-xs text-sky-700 dark:text-sky-300">
-              正在创建任务，请在右侧面板查看进度…
+              {t.creatingTaskHint}
             </p>
           </div>
         )}
@@ -195,7 +198,7 @@ export function UrlTaskComposer(): JSX.Element {
             <div className="flex items-center gap-2 mb-2">
               <DownloadIcon className="h-4 w-4 text-emerald-600 dark:text-emerald-400 flex-shrink-0" />
               <p className="text-xs text-emerald-700 dark:text-emerald-300 flex-1">
-                {dlProgress.message}
+                {localizeBackendMessage(dlProgress.message, locale)}
               </p>
             </div>
             <div className="h-1.5 rounded-full bg-emerald-200/60 dark:bg-emerald-900/40 overflow-hidden">
@@ -217,7 +220,7 @@ export function UrlTaskComposer(): JSX.Element {
           disabled={!canStart}
         >
           <PlayIcon className="h-4 w-4" />
-          {mutation.isPending ? "创建中…" : "开始转写"}
+          {mutation.isPending ? t.creating : t.startTranscription}
         </Button>
 
         {/* Download buttons */}
@@ -230,7 +233,7 @@ export function UrlTaskComposer(): JSX.Element {
             onClick={() => handleDownload("video")}
           >
             <VideoIcon className="h-4 w-4" />
-            下载视频
+            {t.downloadVideo}
           </Button>
           <Button
             type="button"
@@ -240,19 +243,19 @@ export function UrlTaskComposer(): JSX.Element {
             onClick={() => handleDownload("audio")}
           >
             <Music2Icon className="h-4 w-4" />
-            下载音频
+            {t.downloadAudio}
           </Button>
         </div>
       </div>
 
       {mutation.isError && (
         <p className="text-xs text-red-600 dark:text-red-400">
-          {(mutation.error as Error).message || "创建任务失败"}
+          {(mutation.error as Error).message || t.createTaskFailed}
         </p>
       )}
       {dlMutation.isError && (
         <p className="text-xs text-red-600 dark:text-red-400">
-          {(dlMutation.error as Error).message || "下载失败"}
+          {(dlMutation.error as Error).message || t.downloadFailed}
         </p>
       )}
 

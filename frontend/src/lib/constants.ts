@@ -1,14 +1,5 @@
 // Shared constants and utility functions.
 
-export const STATUS_LABELS: Record<string, string> = {
-  queued: "排队中",
-  running: "进行中",
-  paused: "暂停中",
-  completed: "已完成",
-  failed: "失败",
-  cancelled: "已停止"
-};
-
 export function getSourceLabel(source?: Record<string, unknown>, maxLen = 50): string {
   if (!source) return "";
   const truncate = (s: string) => (s.length > maxLen ? s.slice(0, maxLen) + "…" : s);

@@ -15,6 +15,7 @@ import { ensureBackendBase, fetchSettings, listTasks } from "../lib/api";
 import { useTasksStore } from "../hooks/useTasksStore";
 import { useTaskSubscription } from "../hooks/useTaskSubscription";
 import { AuroraBackground } from "../components/ui/aurora-background";
+import { useLocaleStore, useT } from "../lib/i18n";
 
 const queryClient = new QueryClient();
 
@@ -24,6 +25,9 @@ type SourceTab = "batch" | "url";
 
 function AppShell(): JSX.Element {
   const [theme, setTheme] = useTheme();
+  const t = useT();
+  const locale = useLocaleStore((state) => state.locale);
+  const setLocale = useLocaleStore((state) => state.setLocale);
   const [sourceTab, setSourceTab] = useState<SourceTab>("batch");
   const [showSettings, setShowSettings] = useState(false);
   const [correctionActive, setCorrectionActive] = useState(false);
@@ -52,9 +56,13 @@ function AppShell(): JSX.Element {
   useTaskSubscription(activeTaskId);
 
   useEffect(() => {
-    document.title = "闻见 · EchoSmith";
     void ensureBackendBase();
   }, []);
+
+  useEffect(() => {
+    document.title = locale === "zh" ? "闻见 · EchoSmith" : "EchoSmith";
+    document.documentElement.lang = locale === "zh" ? "zh-CN" : "en";
+  }, [locale]);
 
   useEffect(() => {
     const media = window.matchMedia("(prefers-color-scheme: dark)");
@@ -89,10 +97,10 @@ function AppShell(): JSX.Element {
             />
             <div className="min-w-0">
               <h1 className="truncate text-base font-semibold tracking-tight text-slate-950 dark:text-white">
-                闻见 · EchoSmith
+                {locale === "zh" ? "闻见 · EchoSmith" : "EchoSmith"}
               </h1>
               <p className="truncate text-[11px] text-slate-500 dark:text-slate-400">
-                本地媒体下载、转写、纠错与导出中心
+                {t.appSubtitle}
               </p>
             </div>
           </div>
@@ -101,9 +109,19 @@ function AppShell(): JSX.Element {
             <Button
               variant="secondary"
               size="icon"
+              className="text-xs font-semibold"
+              onClick={() => setLocale(locale === "zh" ? "en" : "zh")}
+              title={t.switchLanguage}
+              aria-label={t.switchLanguage}
+            >
+              {t.languageButton}
+            </Button>
+            <Button
+              variant="secondary"
+              size="icon"
               onClick={() => setTheme(darkActive ? "light" : "dark")}
-              title={darkActive ? "切换浅色模式" : "切换深色模式"}
-              aria-label={darkActive ? "切换浅色模式" : "切换深色模式"}
+              title={darkActive ? t.switchToLight : t.switchToDark}
+              aria-label={darkActive ? t.switchToLight : t.switchToDark}
             >
               {darkActive ? <SunIcon className="h-4 w-4" /> : <MoonIcon className="h-4 w-4" />}
             </Button>
@@ -112,10 +130,10 @@ function AppShell(): JSX.Element {
               size="sm"
               className={`gap-1.5 ${correctionActive ? "status-pill-success border-emerald-500/20" : ""}`}
               onClick={() => setShowSettings(!showSettings)}
-              title="打开设置"
+              title={t.openSettings}
             >
               {correctionActive ? <SparklesIcon className="h-4 w-4" /> : <SettingsIcon className="h-4 w-4" />}
-              设置
+              {t.settings}
             </Button>
           </div>
         </header>
@@ -135,8 +153,8 @@ function AppShell(): JSX.Element {
                 }}
               />
               {([
-                { key: "batch" as SourceTab, label: "本地批量" },
-                { key: "url" as SourceTab, label: "在线视频" },
+                { key: "batch" as SourceTab, label: t.tabBatch },
+                { key: "url" as SourceTab, label: t.tabUrl },
               ]).map(({ key, label }) => (
                 <button
                   key={key}

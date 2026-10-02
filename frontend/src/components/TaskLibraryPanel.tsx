@@ -19,7 +19,8 @@ import { Button } from "./ui/button";
 import { useTasksStore } from "../hooks/useTasksStore";
 import { cancelTask, pauseTask, resumeTask } from "../lib/api";
 import type { TaskSnapshot, TaskStatus } from "../lib/api";
-import { STATUS_LABELS, getSourceLabel } from "../lib/constants";
+import { getSourceLabel } from "../lib/constants";
+import { useT, type Messages } from "../lib/i18n";
 import { getStoppableTaskIds } from "./taskControls";
 
 const ACTIVE_STATUSES: TaskStatus[] = ["queued", "running", "paused"];
@@ -36,11 +37,11 @@ async function cancelIgnoring404(taskId: string): Promise<void> {
   }
 }
 
-function formatRelativeTime(timestamp: number): string {
+function formatRelativeTime(timestamp: number, t: Messages): string {
   const seconds = Math.max(0, Date.now() / 1000 - timestamp);
-  if (seconds < 60) return "刚刚";
-  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟前`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)} 小时前`;
+  if (seconds < 60) return t.justNow;
+  if (seconds < 3600) return t.minutesAgo(Math.floor(seconds / 60));
+  if (seconds < 86400) return t.hoursAgo(Math.floor(seconds / 3600));
   const date = new Date(timestamp * 1000);
   const pad = (value: number) => String(value).padStart(2, "0");
   return `${date.getMonth() + 1}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
@@ -75,6 +76,7 @@ function TaskRow({
   onPauseResume: () => void;
   onRemove: () => void;
 }): JSX.Element {
+  const t = useT();
   const isUrl = (task.source as Record<string, unknown>).type === "url";
   const name = getSourceLabel(task.source, 40) || task.id.slice(0, 8);
   const progressPct = Math.round((task.progress ?? 0) * 100);
@@ -109,8 +111,8 @@ function TaskRow({
             <Button
               variant="ghost"
               size="icon"
-              title={isPaused ? "继续" : "暂停"}
-              aria-label={isPaused ? "继续" : "暂停"}
+              title={isPaused ? t.resume : t.pause}
+              aria-label={isPaused ? t.resume : t.pause}
               className="h-7 w-7 rounded-lg"
               onClick={(event) => {
                 event.stopPropagation();
@@ -123,8 +125,8 @@ function TaskRow({
           <Button
             variant="ghost"
             size="icon"
-            title="移除"
-            aria-label="移除"
+            title={t.remove}
+            aria-label={t.remove}
             className="h-7 w-7 rounded-lg"
             onClick={(event) => {
               event.stopPropagation();
@@ -137,7 +139,7 @@ function TaskRow({
       </div>
       <div className="mt-1.5 flex items-center gap-2 pl-6">
         <span className="text-[11px] text-slate-500 dark:text-slate-400">
-          {STATUS_LABELS[task.status] ?? task.status}
+          {t.status[task.status] ?? task.status}
         </span>
         {task.status === "running" && (
           <>
@@ -159,7 +161,7 @@ function TaskRow({
         )}
         {task.status !== "running" && (
           <span className="ml-auto flex-shrink-0 text-[10px] text-slate-400 dark:text-slate-500">
-            {formatRelativeTime(task.updated_at)}
+            {formatRelativeTime(task.updated_at, t)}
           </span>
         )}
       </div>
@@ -178,6 +180,7 @@ export function TaskLibraryPanel(): JSX.Element {
       resetUserClearedFlag: state.resetUserClearedFlag,
     }));
   const [busy, setBusy] = useState(false);
+  const t = useT();
 
   const sortedTasks = useMemo(
     () => Object.values(tasks).sort((a, b) => b.created_at - a.created_at),
@@ -205,7 +208,7 @@ export function TaskLibraryPanel(): JSX.Element {
       else await pauseTask(task.id);
     } catch (error) {
       console.error("Failed to pause/resume task:", error);
-      window.alert("操作失败，请稍后再试");
+      window.alert(t.actionFailed);
     }
   };
 
@@ -215,7 +218,7 @@ export function TaskLibraryPanel(): JSX.Element {
       removeTask(task.id);
     } catch (error) {
       console.error("Failed to remove task:", error);
-      window.alert("移除任务失败，请稍后再试");
+      window.alert(t.removeFailed);
     }
   };
 
@@ -249,7 +252,7 @@ export function TaskLibraryPanel(): JSX.Element {
       }
     }
     if (failed) {
-      window.alert("部分任务清空失败，请稍后再试");
+      window.alert(t.clearPartialFailed);
       resetUserClearedFlag();
     }
     setBusy(false);
@@ -258,13 +261,13 @@ export function TaskLibraryPanel(): JSX.Element {
   return (
     <aside className="liquid-panel flex h-full min-h-0 flex-col gap-3 p-4">
       <div>
-        <h2 className="text-sm font-semibold text-slate-950 dark:text-white">任务库</h2>
+        <h2 className="text-sm font-semibold text-slate-950 dark:text-white">{t.taskLibrary}</h2>
         <div className="mt-1.5 flex items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400">
-          <span>进行中 {counts.active}</span>
+          <span>{t.countActive(counts.active)}</span>
           <span className="opacity-40">·</span>
-          <span>完成 {counts.completed}</span>
+          <span>{t.countCompleted(counts.completed)}</span>
           <span className="opacity-40">·</span>
-          <span>失败/取消 {counts.failed}</span>
+          <span>{t.countFailed(counts.failed)}</span>
         </div>
         <div className="mt-2.5 grid grid-cols-2 gap-2">
           <Button
@@ -275,7 +278,7 @@ export function TaskLibraryPanel(): JSX.Element {
             onClick={handleStopAll}
           >
             <StopCircleIcon className="h-4 w-4" />
-            全部停止
+            {t.stopAll}
           </Button>
           <Button
             variant="secondary"
@@ -285,7 +288,7 @@ export function TaskLibraryPanel(): JSX.Element {
             onClick={handleClearAll}
           >
             <Trash2Icon className="h-4 w-4" />
-            清空
+            {t.clearAll}
           </Button>
         </div>
       </div>
@@ -295,9 +298,9 @@ export function TaskLibraryPanel(): JSX.Element {
           <div className="flex h-full flex-col items-center justify-center gap-2 text-slate-400 dark:text-slate-500">
             <FileAudioIcon className="h-8 w-8 opacity-30" />
             <p className="px-4 text-center text-xs leading-5">
-              还没有任务。
+              {t.noTasks}
               <br />
-              从中间面板添加本地文件或在线视频。
+              {t.noTasksHint}
             </p>
           </div>
         ) : (

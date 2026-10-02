@@ -6,6 +6,7 @@ import { UploadIcon, PlayIcon, FileAudioIcon, XIcon, CheckIcon } from "lucide-re
 import { Button } from "./ui/button";
 import { createTaskFromFile, createTaskFromPath, autoExportTask } from "../lib/api";
 import { useTasksStore } from "../hooks/useTasksStore";
+import { useT } from "../lib/i18n";
 
 type ExportFormat = "txt" | "srt" | "json";
 
@@ -31,6 +32,7 @@ export function BatchTaskComposer(): JSX.Element {
   const abortControllerRef = useRef<AbortController | null>(null);
   const [wasInterrupted, setWasInterrupted] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const t = useT();
 
   const upsertTask = useTasksStore((state) => state.upsertTask);
   const setActiveTask = useTasksStore((state) => state.setActiveTask);
@@ -71,7 +73,7 @@ export function BatchTaskComposer(): JSX.Element {
     if (validFiles.length > 0) {
       setBatchFiles((prev) => [...prev, ...validFiles]);
     } else if (droppedFiles.length > 0) {
-      alert("不支持的文件格式，请选择音视频文件");
+      alert(t.unsupportedFormat);
     }
   };
 
@@ -127,10 +129,10 @@ export function BatchTaskComposer(): JSX.Element {
   const mutation = useMutation({
     mutationFn: async () => {
       if (batchFiles.length === 0) {
-        throw new Error("请先选择文件");
+        throw new Error(t.selectFilesFirst);
       }
       if (exportFormats.size === 0) {
-        throw new Error("请至少选择一种导出格式");
+        throw new Error(t.selectFormatFirst);
       }
 
       // Create abort controller for this batch
@@ -244,7 +246,7 @@ export function BatchTaskComposer(): JSX.Element {
                 ? {
                     ...f,
                     status: "failed" as const,
-                    error: error instanceof Error ? error.message : "未知错误",
+                    error: error instanceof Error ? error.message : t.unknownError,
                   }
                 : f
             )
@@ -374,16 +376,16 @@ export function BatchTaskComposer(): JSX.Element {
       onSubmit={handleSubmit}
     >
       <div>
-        <h2 className="text-base font-semibold text-slate-950 dark:text-white">本地媒体批量处理</h2>
+        <h2 className="text-base font-semibold text-slate-950 dark:text-white">{t.batchTitle}</h2>
         <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-          选择多个音视频文件，自动转写并保存到源文件目录
+          {t.batchSubtitle}
         </p>
       </div>
 
       {/* Export format selection */}
       <div>
         <label className="mb-2 block text-sm font-medium text-slate-900 dark:text-white">
-          导出格式
+          {t.exportFormat}
         </label>
         <div className="flex gap-2">
           {(["txt", "srt", "json"] as ExportFormat[]).map((format) => (
@@ -434,10 +436,10 @@ export function BatchTaskComposer(): JSX.Element {
             />
           </div>
           <p className="mb-1 text-sm font-semibold text-slate-950 dark:text-white">
-            {isDragging ? "松开以添加文件" : "点击选择或拖拽文件到此处"}
+            {isDragging ? t.dropToAdd : t.clickOrDrag}
           </p>
           <p className="text-xs text-slate-500 dark:text-slate-400">
-            支持 MP3 / WAV / M4A / MP4 / MOV 等常见格式
+            {t.supportedFormats}
           </p>
         </div>
 
@@ -490,21 +492,21 @@ export function BatchTaskComposer(): JSX.Element {
           onClick={allDone ? () => { setBatchFiles([]); setWasInterrupted(false); } : undefined}
         >
           {allDone ? (
-            <><CheckIcon className="h-4 w-4" /> 全部完成</>
+            <><CheckIcon className="h-4 w-4" /> {t.allDone}</>
           ) : (
             <><PlayIcon className="h-4 w-4" />
             {mutation.isPending
-              ? `处理中 (${batchFiles.filter((f) => f.status === "completed").length}/${batchFiles.length})`
+              ? t.processing(batchFiles.filter((f) => f.status === "completed").length, batchFiles.length)
               : wasInterrupted
-              ? `继续转写 (剩余 ${batchFiles.filter((f) => f.status === "pending").length} 个文件)`
-              : `开始转写 (${batchFiles.length} 个文件)`}</>
+              ? t.resumeBatch(batchFiles.filter((f) => f.status === "pending").length)
+              : t.startBatch(batchFiles.length)}</>
           )}
         </Button>
       </div>
 
       {mutation.isError && (
         <p className="text-xs text-red-600 dark:text-red-400">
-          {(mutation.error as Error).message || "批量处理失败"}
+          {(mutation.error as Error).message || t.batchFailed}
         </p>
       )}
 

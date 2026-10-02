@@ -20,6 +20,7 @@ import {
   type CorrectionConfig,
   type ApiUsageStats,
 } from "../lib/api";
+import { useLocaleStore, useT } from "../lib/i18n";
 
 interface SettingsPanelProps {
   onClose: () => void;
@@ -45,6 +46,9 @@ export function SettingsPanel({
   theme,
   onThemeChange,
 }: SettingsPanelProps): JSX.Element {
+  const t = useT();
+  const locale = useLocaleStore((state) => state.locale);
+  const setLocale = useLocaleStore((state) => state.setLocale);
   const [mode, setMode] = useState<CorrectionMode>("none");
   const [provider, setProvider] = useState<ApiProvider>("openai");
   const [apiKey, setApiKey] = useState("");
@@ -170,7 +174,7 @@ export function SettingsPanel({
       <div className="relative w-full max-w-2xl bg-white dark:bg-zinc-900 border-l border-black/[0.08] dark:border-white/[0.08] shadow-2xl overflow-y-auto animate-slide-in-right">
         <div className="sticky top-0 z-10 flex items-center justify-between px-6 py-4 border-b border-black/[0.08] dark:border-white/[0.08] bg-white/90 dark:bg-zinc-900/90 backdrop-blur-xl">
           <h2 className="text-base font-semibold text-gray-900 dark:text-white">
-            设置
+            {t.settings}
           </h2>
           <button
             onClick={onClose}
@@ -192,21 +196,21 @@ export function SettingsPanel({
             <div className={`h-2 w-2 rounded-full ${
               mode === "cloud_api" && apiKeySet ? "bg-emerald-500" : mode === "cloud_api" ? "bg-amber-500" : "bg-gray-400"
             }`} />
-            {mode === "none" && "纠错已关闭"}
-            {mode === "cloud_api" && apiKeySet && "纠错已开启"}
-            {mode === "cloud_api" && !apiKeySet && "需要配置 API Key"}
+            {mode === "none" && t.correctionOff}
+            {mode === "cloud_api" && apiKeySet && t.correctionOn}
+            {mode === "cloud_api" && !apiKeySet && t.needApiKey}
           </div>
 
           {/* Appearance */}
           <section>
             <h3 className="text-sm font-semibold text-gray-900 dark:text-white mb-3">
-              外观
+              {t.appearance}
             </h3>
             <div className="grid grid-cols-3 gap-2">
               {([
-                { value: "light" as const, label: "浅色", icon: SunIcon },
-                { value: "dark" as const, label: "深色", icon: MoonIcon },
-                { value: "system" as const, label: "系统", icon: MonitorIcon },
+                { value: "light" as const, label: t.themeLight, icon: SunIcon },
+                { value: "dark" as const, label: t.themeDark, icon: MoonIcon },
+                { value: "system" as const, label: t.themeSystem, icon: MonitorIcon },
               ]).map(({ value, label, icon: Icon }) => (
                 <button
                   key={value}
@@ -225,15 +229,41 @@ export function SettingsPanel({
             </div>
           </section>
 
+          {/* Language */}
+          <section>
+            <h3 className="text-sm font-semibold text-gray-900 dark:text-white mb-3">
+              {t.language}
+            </h3>
+            <div className="grid grid-cols-2 gap-2">
+              {([
+                { value: "zh" as const, label: "中文" },
+                { value: "en" as const, label: "English" },
+              ]).map(({ value, label }) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => setLocale(value)}
+                  className={`flex items-center justify-center rounded-xl border px-3 py-2 text-sm transition-all ${
+                    locale === value
+                      ? "border-sky-500/50 bg-sky-500/[0.07] text-sky-800 dark:text-sky-200"
+                      : "border-black/[0.08] text-gray-700 hover:border-black/[0.15] dark:border-white/[0.08] dark:text-gray-300 dark:hover:border-white/[0.15]"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </section>
+
           {/* Correction Mode */}
           <section>
             <h3 className="text-sm font-semibold text-gray-900 dark:text-white mb-3">
-              纠错模式
+              {t.correctionMode}
             </h3>
             <div className="space-y-2">
               {([
-                { value: "none" as CorrectionMode, label: "关闭", desc: "不进行纠错，直接输出转写结果" },
-                { value: "cloud_api" as CorrectionMode, label: "云端 API 纠错", desc: "调用 OpenAI / Anthropic / DeepSeek 等大模型纠错" },
+                { value: "none" as CorrectionMode, label: t.modeNone, desc: t.modeNoneDesc },
+                { value: "cloud_api" as CorrectionMode, label: t.modeCloud, desc: t.modeCloudDesc },
               ]).map((opt) => (
                 <label
                   key={opt.value}
@@ -264,23 +294,23 @@ export function SettingsPanel({
           {mode === "cloud_api" && (
             <section className="space-y-4">
               <h3 className="text-sm font-semibold text-gray-900 dark:text-white">
-                云端 API 配置
+                {t.cloudConfig}
               </h3>
 
               <div>
                 <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
-                  服务商
+                  {t.provider}
                 </label>
                 <select
                   value={provider}
                   onChange={(e) => handleProviderChange(e.target.value as ApiProvider)}
                   className="w-full rounded-lg border border-black/[0.1] dark:border-white/[0.1] bg-white dark:bg-zinc-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
                 >
-                  <option value="doubao">豆包（火山引擎）</option>
+                  <option value="doubao">{t.providerDoubao}</option>
                   <option value="openai">OpenAI</option>
                   <option value="anthropic">Anthropic</option>
                   <option value="deepseek">DeepSeek</option>
-                  <option value="custom">自定义</option>
+                  <option value="custom">{t.providerCustom}</option>
                 </select>
               </div>
 
@@ -292,20 +322,20 @@ export function SettingsPanel({
                   type="password"
                   value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)}
-                  placeholder={apiKeySet ? "已设置（输入新值覆盖）" : "输入 API Key"}
+                  placeholder={apiKeySet ? t.apiKeySetPlaceholder : t.apiKeyPlaceholder}
                   className="w-full rounded-lg border border-black/[0.1] dark:border-white/[0.1] bg-white dark:bg-zinc-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
                 />
               </div>
 
               <div>
                 <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
-                  模型名称
+                  {t.modelName}
                 </label>
                 <input
                   type="text"
                   value={apiModel}
                   onChange={(e) => setApiModel(e.target.value)}
-                  placeholder="模型名称"
+                  placeholder={t.modelName}
                   className="w-full rounded-lg border border-black/[0.1] dark:border-white/[0.1] bg-white dark:bg-zinc-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
                 />
               </div>
@@ -341,13 +371,13 @@ export function SettingsPanel({
               ) : (
                 <SaveIcon className="h-3.5 w-3.5" />
               )}
-              {saving ? "保存中…" : "保存设置"}
+              {saving ? t.saving : t.saveSettings}
             </Button>
             {saved && (
-              <span className="text-xs text-emerald-600 dark:text-emerald-400">已保存</span>
+              <span className="text-xs text-emerald-600 dark:text-emerald-400">{t.saved}</span>
             )}
             {!dirty && !saved && serverState && (
-              <span className="text-xs text-gray-400">设置已是最新</span>
+              <span className="text-xs text-gray-400">{t.upToDate}</span>
             )}
           </div>
 
@@ -356,31 +386,31 @@ export function SettingsPanel({
             <section className="p-4 rounded-xl bg-black/[0.02] dark:bg-white/[0.03] border border-black/[0.06] dark:border-white/[0.06]">
               <div className="flex items-center justify-between mb-2">
                 <h3 className="text-sm font-semibold text-gray-900 dark:text-white">
-                  API 调用统计
+                  {t.apiUsage}
                 </h3>
                 <button
                   onClick={handleResetUsage}
                   className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
-                  title="重置统计"
+                  title={t.resetUsage}
                 >
                   <RotateCcwIcon className="h-3 w-3" />
-                  重置
+                  {t.reset}
                 </button>
               </div>
               <div className="grid grid-cols-3 gap-3">
                 <div className="text-center">
                   <div className="text-lg font-semibold text-gray-900 dark:text-white">{usage.total_calls}</div>
-                  <div className="text-[11px] text-gray-500 dark:text-gray-400">总调用次数</div>
+                  <div className="text-[11px] text-gray-500 dark:text-gray-400">{t.totalCalls}</div>
                 </div>
                 <div className="text-center">
                   <div className="text-lg font-semibold text-gray-900 dark:text-white">{usage.total_segments}</div>
-                  <div className="text-[11px] text-gray-500 dark:text-gray-400">纠错段数</div>
+                  <div className="text-[11px] text-gray-500 dark:text-gray-400">{t.correctedSegments}</div>
                 </div>
                 <div className="text-center">
                   <div className={`text-lg font-semibold ${usage.failed_calls > 0 ? "text-red-500" : "text-gray-900 dark:text-white"}`}>
                     {usage.failed_calls}
                   </div>
-                  <div className="text-[11px] text-gray-500 dark:text-gray-400">失败次数</div>
+                  <div className="text-[11px] text-gray-500 dark:text-gray-400">{t.failedCalls}</div>
                 </div>
               </div>
             </section>
@@ -389,10 +419,10 @@ export function SettingsPanel({
           {/* Hotwords */}
           <section>
             <h3 className="text-sm font-semibold text-gray-900 dark:text-white mb-1">
-              热词表
+              {t.hotwords}
             </h3>
             <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
-              导入文本文件，每行一个词。纠错时优先使用这些词汇。
+              {t.hotwordsDesc}
             </p>
             <div className="flex items-center gap-3 mb-3">
               <Button
@@ -422,15 +452,15 @@ export function SettingsPanel({
                 }}
               >
                 <UploadIcon className="h-3.5 w-3.5" />
-                导入热词文件
+                {t.importHotwords}
               </Button>
               <div className="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
                 <FileTextIcon className="h-3.5 w-3.5" />
-                <span>已加载 {words.length} 个热词</span>
+                <span>{t.hotwordsLoaded(words.length)}</span>
               </div>
             </div>
             <p className="text-xs text-gray-400">
-              支持 .txt 文件，每行一个词，或用逗号分隔
+              {t.hotwordsFormatHint}
             </p>
           </section>
         </div>

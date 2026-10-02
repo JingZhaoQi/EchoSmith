@@ -5,7 +5,8 @@ import { AlertTriangleIcon, FileTextIcon } from "lucide-react";
 import { Card } from "./ui/card";
 import { Progress } from "./ui/progress";
 import { useTasksStore } from "../hooks/useTasksStore";
-import { STATUS_LABELS, getSourceLabel } from "../lib/constants";
+import { getSourceLabel } from "../lib/constants";
+import { localizeBackendMessage, useLocaleStore, useT } from "../lib/i18n";
 
 export function RawTranscriptPanel(): JSX.Element {
   const { tasks, activeTaskId } = useTasksStore((state) => ({
@@ -14,6 +15,8 @@ export function RawTranscriptPanel(): JSX.Element {
   }));
   const task = activeTaskId ? tasks[activeTaskId] : undefined;
   const resultRef = useRef<HTMLDivElement | null>(null);
+  const t = useT();
+  const locale = useLocaleStore((state) => state.locale);
 
   const isFailed = task?.status === "failed";
   const isRunning = task?.status === "running" || task?.status === "queued";
@@ -35,10 +38,10 @@ export function RawTranscriptPanel(): JSX.Element {
   }, [rawText, activeTaskId]);
 
   const statusText = (() => {
-    if (!task) return "等待任务";
-    if (isFailed) return "识别失败";
-    if (isRunning) return task.message || "转写中";
-    return STATUS_LABELS[task.status] ?? task.status;
+    if (!task) return t.waitingTask;
+    if (isFailed) return t.recognitionFailed;
+    if (isRunning) return task.message ? localizeBackendMessage(task.message, locale) : t.transcribing;
+    return t.status[task.status] ?? task.status;
   })();
 
   return (
@@ -52,10 +55,10 @@ export function RawTranscriptPanel(): JSX.Element {
           )}
           <div className="min-w-0">
             <h2 className="truncate text-sm font-semibold text-slate-950 dark:text-white">
-              ASR 原文
+              {t.rawTitle}
             </h2>
             <p className="truncate text-[11px] text-slate-500 dark:text-slate-400">
-              {task ? getSourceLabel(task.source, 48) || task.id.slice(0, 8) : "本地识别结果，未经大模型纠错"}
+              {task ? getSourceLabel(task.source, 48) || task.id.slice(0, 8) : t.rawSubtitle}
             </p>
           </div>
         </div>
@@ -92,7 +95,7 @@ export function RawTranscriptPanel(): JSX.Element {
           <div className="flex h-full flex-col items-center justify-center gap-2 text-slate-500 dark:text-slate-400">
             <FileTextIcon className="h-8 w-8 opacity-20" />
             <span className="text-xs">
-              {task ? "原文会随着转写进度显示在这里。" : "从任务库选择任务，或创建新任务。"}
+              {task ? t.rawEmptyWithTask : t.selectOrCreateTask}
             </span>
           </div>
         )}
