@@ -1,6 +1,6 @@
 [tool.isort]
 profile = "black"
-known_first_party = ["asr_engine", "task_store", "app"]
+known_first_party = ["asr_engine", "task_store", "app", "url_downloader"]
 line_length = 88
 
 [tool.black]

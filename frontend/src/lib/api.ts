@@ -379,7 +379,7 @@ export async function downloadMedia(
   let buffer = "";
   let result: { filename: string; path: string } | null = null;
 
-  while (true) {
+  for (;;) {
     const { done, value } = await reader.read();
     if (value) buffer += decoder.decode(value, { stream: true });
 

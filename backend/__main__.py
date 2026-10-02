@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
+import time
 from pathlib import Path
 
 import uvicorn
@@ -20,6 +22,7 @@ if getattr(sys, "frozen", False):
     # Bundled Python can't find system CA certs; use certifi's CA bundle.
     try:
         import certifi
+
         os.environ["SSL_CERT_FILE"] = certifi.where()
         os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()
         print(f"[INIT] SSL_CERT_FILE set to: {certifi.where()}")
@@ -41,7 +44,9 @@ if getattr(sys, "frozen", False):
     else:
         # Fall back to system PATH with common locations (platform-aware)
         if sys.platform == "win32":
-            additional_paths: list[str] = []  # Windows relies on system PATH / installer
+            additional_paths: list[str] = (
+                []
+            )  # Windows relies on system PATH / installer
         else:
             additional_paths = [
                 "/opt/homebrew/bin",  # Homebrew on Apple Silicon
@@ -80,7 +85,22 @@ else:
     except ImportError:
         from backend.app import app
 
+
+def _exit_when_orphaned(interval: float = 2.0) -> None:
+    """Exit once the launching app is gone (crash, force quit, missed cleanup).
+
+    On Unix an orphan is re-parented, so getppid() changes.
+    """
+    # ponytail: Unix only; on Windows getppid() never changes, the app's kill covers it
+    parent = os.getppid()
+    while os.getppid() == parent:
+        time.sleep(interval)
+    os._exit(0)
+
+
 if __name__ == "__main__":
+    if sys.platform != "win32":
+        threading.Thread(target=_exit_when_orphaned, daemon=True).start()
     port = int(os.environ.get("ECHOSMITH_PORT", "5179"))
     host = os.environ.get("ECHOSMITH_HOST", "127.0.0.1")
     uvicorn.run(app, host=host, port=port, log_level="info")

@@ -129,7 +129,8 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("failed to build Tauri app")
         .run(|app_handle, event| {
-            if let tauri::RunEvent::ExitRequested { .. } = event {
+            // Cmd+Q on macOS emits only `Exit`, not `ExitRequested`, so handle both.
+            if let tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit = event {
                 // Clean up backend process
                 if let Some(state) = app_handle.try_state::<BackendState>() {
                     if let Some(mut child) = state.process.lock().unwrap().take() {

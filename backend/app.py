@@ -137,10 +137,13 @@ async def healthcheck() -> JSONResponse:
         debug_info["bundle_dir"] = str(bundle_dir)
         debug_info["ffmpeg_bin_exists"] = bundled_ffmpeg_dir.exists()
         if bundled_ffmpeg_dir.exists():
-            debug_info["ffmpeg_bin_contents"] = [f.name for f in bundled_ffmpeg_dir.iterdir()]
+            debug_info["ffmpeg_bin_contents"] = [
+                f.name for f in bundled_ffmpeg_dir.iterdir()
+            ]
 
     try:
         import yt_dlp as _yt_dlp  # noqa: F401
+
         ytdlp_ok = True
     except ImportError:
         ytdlp_ok = False
@@ -399,7 +402,11 @@ async def delete_task(task_id: str, _: None = Depends(verify_token)) -> JSONResp
 
     # Delete the uploaded file if it exists (but not user's original local files)
     source_path = record.source.get("path")
-    if source_path and record.source.get("type") != "local" and Path(source_path).exists():
+    if (
+        source_path
+        and record.source.get("type") != "local"
+        and Path(source_path).exists()
+    ):
         try:
             Path(source_path).unlink()
         except Exception:
@@ -594,7 +601,11 @@ async def _run_task(task_id: str, source_info: dict, cleanup_paths: list[str]) -
         else:
             audio_path = Path(source_info["path"])
 
-        await task_store.update_task(task_id, message="转写中", progress=0.05 if source_info.get("type") != "url" else 0.30)
+        await task_store.update_task(
+            task_id,
+            message="转写中",
+            progress=0.05 if source_info.get("type") != "url" else 0.30,
+        )
 
         # Apply language setting from task
         await engine.set_language(source_info.get("language", "zh"))
@@ -608,6 +619,7 @@ async def _run_task(task_id: str, source_info: dict, cleanup_paths: list[str]) -
 
         # For URL tasks, map transcription progress from 0.3 to 1.0
         if source_info.get("type") == "url":
+
             def url_progress_cb(progress: float, stage: str, partial: str) -> None:
                 mapped_progress = 0.3 + progress * 0.7
                 progress_cb(mapped_progress, stage, partial)
@@ -654,6 +666,7 @@ async def _run_task(task_id: str, source_info: dict, cleanup_paths: list[str]) -
                 return
     except Exception as exc:  # noqa: BLE001
         import traceback
+
         print(f"[TASK ERROR] {task_id}: {exc}", flush=True)
         traceback.print_exc()
         updated = await task_store.update_task(
@@ -954,6 +967,8 @@ async def download_media_endpoint(
             result = task.result()
             yield _json.dumps({"type": "done", **result}, ensure_ascii=False) + "\n"
         except Exception as exc:
-            yield _json.dumps({"type": "error", "detail": str(exc)}, ensure_ascii=False) + "\n"
+            yield _json.dumps(
+                {"type": "error", "detail": str(exc)}, ensure_ascii=False
+            ) + "\n"
 
     return StreamingResponse(generate(), media_type="application/x-ndjson")
