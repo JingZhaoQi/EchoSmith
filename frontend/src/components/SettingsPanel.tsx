@@ -4,24 +4,19 @@ import {
   CheckIcon,
   XIcon,
   LoaderIcon,
-  UploadIcon,
-  FileTextIcon,
   RotateCcwIcon,
   SunIcon,
   MoonIcon,
   MonitorIcon,
 } from "lucide-react";
 
-import { Button } from "./ui/button";
+import { HotwordEditor } from "./HotwordEditor";
 import {
   fetchSettings,
   updateSettings,
   resetApiUsage,
-  fetchHotwords,
-  importHotwords,
   errorMessage,
   type CorrectionConfig,
-  type HotwordList,
   type ApiUsageStats,
 } from "../lib/api";
 import { useLocaleStore, useT } from "../lib/i18n";
@@ -64,7 +59,6 @@ export function SettingsPanel({
   const [error, setError] = useState<string | null>(null);
   const [apiModel, setApiModel] = useState("gpt-4o-mini");
   const [apiBaseUrl, setApiBaseUrl] = useState("");
-  const [hotwords, setHotwords] = useState<HotwordList>({ words: [], in_prompt: 0 });
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [usage, setUsage] = useState<ApiUsageStats>({ total_calls: 0, total_segments: 0, failed_calls: 0 });
   const pending = useRef<Partial<CorrectionConfig>>({}); // typed edits not yet saved
@@ -85,7 +79,6 @@ export function SettingsPanel({
       })
       .catch((e) => setError(errorMessage(e)));
 
-    fetchHotwords().then(setHotwords).catch((e) => setError(errorMessage(e)));
     return () => {
       clearTimeout(typingTimer.current);
       clearTimeout(savedTimer.current);
@@ -440,56 +433,7 @@ export function SettingsPanel({
             </section>
           )}
 
-          {/* Hotwords */}
-          <section>
-            <h3 className="text-sm font-semibold text-gray-900 dark:text-white mb-1">
-              {t.hotwords}
-            </h3>
-            <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
-              {t.hotwordsDesc}
-            </p>
-            <div className="flex items-center gap-3 mb-3">
-              <Button
-                variant="secondary"
-                size="sm"
-                className="gap-1.5"
-                onClick={() => {
-                  const input = document.createElement("input");
-                  input.type = "file";
-                  input.accept = ".txt,.csv,.text";
-                  input.onchange = async (e) => {
-                    const file = (e.target as HTMLInputElement).files?.[0];
-                    if (!file) return;
-                    const text = await file.text();
-                    const newWords = text.split(/[\n\r,，]+/).map(w => w.trim()).filter(Boolean);
-                    if (newWords.length === 0) return;
-                    try {
-                      setHotwords(await importHotwords(newWords));
-                    } catch (err) {
-                      setError(errorMessage(err));
-                    }
-                  };
-                  input.click();
-                }}
-              >
-                <UploadIcon className="h-3.5 w-3.5" />
-                {t.importHotwords}
-              </Button>
-              <div className="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
-                <FileTextIcon className="h-3.5 w-3.5" />
-                <span>{t.hotwordsLoaded(hotwords.words.length)}</span>
-              </div>
-            </div>
-            <p className="text-xs text-gray-400">
-              {t.hotwordsFormatHint}
-            </p>
-            {hotwords.in_prompt < hotwords.words.length && (
-              <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">{t.hotwordsOverBudget(hotwords.in_prompt)}</p>
-            )}
-            {mode === "none" && hotwords.words.length > 0 && (
-              <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">{t.hotwordsNeedCorrection}</p>
-            )}
-          </section>
+          <HotwordEditor correctionOn={mode !== "none"} />
         </div>
       </div>
     </div>

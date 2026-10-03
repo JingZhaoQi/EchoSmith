@@ -218,10 +218,10 @@ export async function fetchHotwords(): Promise<HotwordList> {
   return response.data;
 }
 
-export async function addHotword(word: string): Promise<string[]> {
+export async function addHotword(word: string): Promise<HotwordList> {
   await ensureBackendBase();
-  const response = await apiClient.post<{ words: string[] }>("/hotwords", { word });
-  return response.data.words;
+  const response = await apiClient.post<HotwordList>("/hotwords", { word });
+  return response.data;
 }
 
 /** Replace the whole hotword list. */
@@ -231,12 +231,10 @@ export async function importHotwords(words: string[]): Promise<HotwordList> {
   return response.data;
 }
 
-export async function removeHotword(word: string): Promise<string[]> {
+export async function removeHotword(word: string): Promise<HotwordList> {
   await ensureBackendBase();
-  const response = await apiClient.delete<{ words: string[] }>(
-    `/hotwords/${encodeURIComponent(word)}`
-  );
-  return response.data.words;
+  const response = await apiClient.delete<HotwordList>(`/hotwords/${encodeURIComponent(word)}`);
+  return response.data;
 }
 
 // Settings types
