@@ -251,3 +251,21 @@ class TestCorrectionEngine:
 
     def test_without_cloud_key_returns_empty(self) -> None:
         assert CorrectionEngine().correct(["保持原文。"]) == ""
+
+
+class TestHotwordBudget:
+    def test_long_lists_keep_words_added_last(self) -> None:
+        words = [f"词{i:03d}" for i in range(290)] + ["柏溪团契"]
+        prompt = build_correction_prompt(["百溪团契"], hot_words=words)
+        assert (
+            "柏溪团契" in prompt
+        )  # a 200-word cap used to drop everything added later
+
+    def test_budget_is_by_characters_and_keeps_order(self) -> None:
+        from correction_engine import HOTWORD_PROMPT_CHARS, hotwords_in_budget
+
+        words = ["长" * 100] * (HOTWORD_PROMPT_CHARS // 100 + 5)
+        kept = hotwords_in_budget(words)
+        assert sum(len(w) for w in kept) <= HOTWORD_PROMPT_CHARS
+        assert len(kept) < len(words)
+        assert hotwords_in_budget(["甲", "乙"]) == ["甲", "乙"]

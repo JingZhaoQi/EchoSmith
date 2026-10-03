@@ -31,7 +31,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 try:
     from asr_engine import ASREngine
-    from correction_engine import CorrectionEngine
+    from correction_engine import CorrectionEngine, hotwords_in_budget
     from exporters import EXPORT_FORMATS, render_export
     from hotwords import HotwordManager
     from settings import SettingsManager
@@ -45,7 +45,7 @@ try:
     )
 except ImportError:
     from .asr_engine import ASREngine
-    from .correction_engine import CorrectionEngine
+    from .correction_engine import CorrectionEngine, hotwords_in_budget
     from .exporters import EXPORT_FORMATS, render_export
     from .hotwords import HotwordManager
     from .settings import SettingsManager
@@ -214,9 +214,15 @@ async def trigger_model_download(_: None = Depends(verify_token)) -> JSONRespons
     return JSONResponse({"status": "started"})
 
 
+def _hotwords_payload() -> dict:
+    """The list plus how many of its words fit into the correction prompt."""
+    words = hotword_manager.list_all()
+    return {"words": words, "in_prompt": len(hotwords_in_budget(words))}
+
+
 @app.get("/api/hotwords")
 async def list_hotwords(_: None = Depends(verify_token)) -> JSONResponse:
-    return JSONResponse({"words": hotword_manager.list_all()})
+    return JSONResponse(_hotwords_payload())
 
 
 @app.post("/api/hotwords")
@@ -229,7 +235,7 @@ async def add_hotword(
         raise HTTPException(status_code=400, detail="热词不能为空")
     word = word.strip()
     hotword_manager.add(word)
-    return JSONResponse({"words": hotword_manager.list_all()})
+    return JSONResponse(_hotwords_payload())
 
 
 @app.post("/api/hotwords/import")
@@ -248,15 +254,13 @@ async def import_hotwords(
         w = str(word).strip()
         if w:
             hotword_manager.add(w)
-    return JSONResponse(
-        {"words": hotword_manager.list_all(), "count": len(hotword_manager.list_all())}
-    )
+    return JSONResponse(_hotwords_payload())
 
 
 @app.delete("/api/hotwords/{word:path}")  # words may contain "/" (e.g. AC/DC)
 async def remove_hotword(word: str, _: None = Depends(verify_token)) -> JSONResponse:
     hotword_manager.remove(word)
-    return JSONResponse({"words": hotword_manager.list_all()})
+    return JSONResponse(_hotwords_payload())
 
 
 @app.get("/api/settings")

@@ -206,10 +206,16 @@ export async function triggerModelDownload(): Promise<{ status: ModelDownloadSta
   return response.data;
 }
 
-export async function fetchHotwords(): Promise<string[]> {
+/** The hotword list and how many of its words fit into the correction prompt. */
+export interface HotwordList {
+  words: string[];
+  in_prompt: number;
+}
+
+export async function fetchHotwords(): Promise<HotwordList> {
   await ensureBackendBase();
-  const response = await apiClient.get<{ words: string[] }>("/hotwords");
-  return response.data.words;
+  const response = await apiClient.get<HotwordList>("/hotwords");
+  return response.data;
 }
 
 export async function addHotword(word: string): Promise<string[]> {
@@ -219,10 +225,10 @@ export async function addHotword(word: string): Promise<string[]> {
 }
 
 /** Replace the whole hotword list. */
-export async function importHotwords(words: string[]): Promise<string[]> {
+export async function importHotwords(words: string[]): Promise<HotwordList> {
   await ensureBackendBase();
-  const response = await apiClient.post<{ words: string[] }>("/hotwords/import", { words });
-  return response.data.words;
+  const response = await apiClient.post<HotwordList>("/hotwords/import", { words });
+  return response.data;
 }
 
 export async function removeHotword(word: string): Promise<string[]> {

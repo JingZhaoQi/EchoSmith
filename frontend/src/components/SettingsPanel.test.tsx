@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SettingsPanel } from "./SettingsPanel";
-import { updateSettings, type AppSettings } from "../lib/api";
+import { fetchHotwords, fetchSettings, updateSettings, type AppSettings } from "../lib/api";
 
 const settings = (correction: Partial<AppSettings["correction"]> = {}): AppSettings => ({
   transcription: { asr_model: "sensevoice-sherpa-2024" },
@@ -14,7 +14,7 @@ const settings = (correction: Partial<AppSettings["correction"]> = {}): AppSetti
 vi.mock("../lib/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/api")>()),
   fetchSettings: vi.fn(async () => settings()),
-  fetchHotwords: vi.fn(async () => ["弟兄姐妹"]),
+  fetchHotwords: vi.fn(async () => ({ words: ["弟兄姐妹"], in_prompt: 1 })),
   updateSettings: vi.fn(async (body: { correction?: Partial<AppSettings["correction"]> }) => settings({ ...body.correction, api_key: "sk-****wxyz" })),
 }));
 
@@ -86,5 +86,17 @@ describe("SettingsPanel saves as you go", () => {
     renderPanel();
     await user.click(await screen.findByRole("button", { name: "清除 Key" }));
     expect(updateSettings).toHaveBeenCalledWith({ correction: { api_key: "" } });
+  });
+
+  it("says when hotwords have no effect because correction is off", async () => {
+    vi.mocked(fetchSettings).mockResolvedValueOnce(settings({ mode: "none" }));
+    renderPanel();
+    expect(await screen.findByText(/当前纠错已关闭，热词不会起作用/)).toBeInTheDocument();
+  });
+
+  it("warns when only part of the hotword list fits", async () => {
+    vi.mocked(fetchHotwords).mockResolvedValueOnce({ words: ["甲", "乙", "丙"], in_prompt: 2 });
+    renderPanel();
+    expect(await screen.findByText(/只使用前 2 个/)).toBeInTheDocument();
   });
 });

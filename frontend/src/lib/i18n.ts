@@ -120,6 +120,8 @@ const zh = {
   importHotwords: "导入热词文件",
   hotwordsLoaded: (n: number) => `已加载 ${n} 个热词`,
   hotwordsFormatHint: "支持 .txt 文件，每行一个词，或用逗号分隔",
+  hotwordsOverBudget: (n: number) => `热词表总长度超过上限，纠错时只使用前 ${n} 个；请删减不常用的词。`,
+  hotwordsNeedCorrection: "热词在智能纠错时生效；当前纠错已关闭，热词不会起作用。",
 
   // Output area & saving
   outputTitle: "转写结果",
@@ -260,6 +262,8 @@ const en: Messages = {
   importHotwords: "Import Hotwords",
   hotwordsLoaded: (n) => `${n} hotword${n === 1 ? "" : "s"} loaded`,
   hotwordsFormatHint: "Supports .txt files, one term per line or comma-separated",
+  hotwordsOverBudget: (n) => `The list is longer than the limit; correction uses only the first ${n} terms. Remove rarely used ones.`,
+  hotwordsNeedCorrection: "Hotwords are used by smart correction; correction is off, so they have no effect now.",
 
   outputTitle: "Transcript",
   resizeHint: "Drag to resize, double-click to reset",

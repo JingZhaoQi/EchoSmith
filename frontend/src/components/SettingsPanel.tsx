@@ -21,6 +21,7 @@ import {
   importHotwords,
   errorMessage,
   type CorrectionConfig,
+  type HotwordList,
   type ApiUsageStats,
 } from "../lib/api";
 import { useLocaleStore, useT } from "../lib/i18n";
@@ -63,7 +64,7 @@ export function SettingsPanel({
   const [error, setError] = useState<string | null>(null);
   const [apiModel, setApiModel] = useState("gpt-4o-mini");
   const [apiBaseUrl, setApiBaseUrl] = useState("");
-  const [words, setWords] = useState<string[]>([]);
+  const [hotwords, setHotwords] = useState<HotwordList>({ words: [], in_prompt: 0 });
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [usage, setUsage] = useState<ApiUsageStats>({ total_calls: 0, total_segments: 0, failed_calls: 0 });
   const pending = useRef<Partial<CorrectionConfig>>({}); // typed edits not yet saved
@@ -84,7 +85,7 @@ export function SettingsPanel({
       })
       .catch((e) => setError(errorMessage(e)));
 
-    fetchHotwords().then(setWords).catch((e) => setError(errorMessage(e)));
+    fetchHotwords().then(setHotwords).catch((e) => setError(errorMessage(e)));
     return () => {
       clearTimeout(typingTimer.current);
       clearTimeout(savedTimer.current);
@@ -463,7 +464,7 @@ export function SettingsPanel({
                     const newWords = text.split(/[\n\r,，]+/).map(w => w.trim()).filter(Boolean);
                     if (newWords.length === 0) return;
                     try {
-                      setWords(await importHotwords(newWords));
+                      setHotwords(await importHotwords(newWords));
                     } catch (err) {
                       setError(errorMessage(err));
                     }
@@ -476,12 +477,18 @@ export function SettingsPanel({
               </Button>
               <div className="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
                 <FileTextIcon className="h-3.5 w-3.5" />
-                <span>{t.hotwordsLoaded(words.length)}</span>
+                <span>{t.hotwordsLoaded(hotwords.words.length)}</span>
               </div>
             </div>
             <p className="text-xs text-gray-400">
               {t.hotwordsFormatHint}
             </p>
+            {hotwords.in_prompt < hotwords.words.length && (
+              <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">{t.hotwordsOverBudget(hotwords.in_prompt)}</p>
+            )}
+            {mode === "none" && hotwords.words.length > 0 && (
+              <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">{t.hotwordsNeedCorrection}</p>
+            )}
           </section>
         </div>
       </div>

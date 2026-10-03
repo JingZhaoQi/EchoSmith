@@ -7,6 +7,9 @@ import threading
 from typing import Callable
 
 MAX_PRECEDING_CHARS = 500
+# Hotwords are capped by total length, not count: 2026-10-03 a 200-word cap silently dropped
+# every word imported after the 200th (290-word list, 824 chars).
+HOTWORD_PROMPT_CHARS = 4000
 
 SYSTEM_PROMPT = (
     "你是一个高准确率语音识别逐字稿校对器。输入是 ASR 逐行输出的原始转写片段，"
@@ -39,6 +42,18 @@ THINKING_OFF_PROVIDERS = {"deepseek", "doubao"}
 TRUNCATED_REASONS = {"length", "max_tokens"}
 
 
+def hotwords_in_budget(words: list[str]) -> list[str]:
+    """Hotwords that fit the prompt budget, in list order."""
+    kept: list[str] = []
+    used = 0
+    for word in words:
+        used += len(word) + 2  # ", " separator
+        if used > HOTWORD_PROMPT_CHARS:
+            break
+        kept.append(word)
+    return kept
+
+
 def build_correction_prompt(
     segments: list[str],
     preceding_text: str = "",
@@ -47,7 +62,7 @@ def build_correction_prompt(
     parts: list[str] = []
     if hot_words:
         parts.append(
-            f"以下是该领域的正确术语写法，遇到发音相近的错误时应替换为这些词：\n{', '.join(hot_words[:200])}"
+            f"以下是该领域的正确术语写法，遇到发音相近的错误时应替换为这些词：\n{', '.join(hotwords_in_budget(hot_words))}"
         )
     if preceding_text:
         truncated = preceding_text[-MAX_PRECEDING_CHARS:]
