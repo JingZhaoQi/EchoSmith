@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { autoExportTask, cancelTask, createTaskFromPath } from "../lib/api";
+import { cancelTask, createTaskFromPath } from "../lib/api";
 import { useBatchStore } from "./useBatchStore";
 import { useTasksStore } from "./useTasksStore";
 import { makeTask } from "../test/fixtures";
@@ -9,7 +9,6 @@ vi.mock("../lib/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/api")>()),
   createTaskFromPath: vi.fn(),
   cancelTask: vi.fn(() => Promise.resolve()),
-  autoExportTask: vi.fn(() => Promise.resolve()),
 }));
 
 let created = 0;
@@ -26,7 +25,7 @@ describe("batch queue", () => {
     created = 0;
     vi.mocked(createTaskFromPath).mockImplementation(async () => `task${++created}`);
     useTasksStore.setState({ tasks: {}, activeTaskId: null });
-    useBatchStore.setState({ items: [], running: false, formats: ["txt", "srt"] });
+    useBatchStore.setState({ items: [], running: false });
   });
 
   it("accepts media files only and ignores duplicates", () => {
@@ -36,7 +35,7 @@ describe("batch queue", () => {
     expect(addFiles([{ name: "C.MP3", path: "/x/C.MP3" }])).toBe(1);
   });
 
-  it("runs files one at a time, follows the running task, auto-exports next to the source", async () => {
+  it("runs files one at a time and follows the running task", async () => {
     const store = useBatchStore.getState();
     store.addFiles([{ name: "a.m4a", path: "/x/a.m4a" }, { name: "b.m4a", path: "/x/b.m4a" }]);
     store.start();
@@ -46,7 +45,6 @@ describe("batch queue", () => {
 
     finish("task1", "completed");
     await until(() => created === 2);
-    expect(autoExportTask).toHaveBeenCalledWith("task1", ["txt", "srt"], "/x/a.m4a");
     expect(useTasksStore.getState().activeTaskId).toBe("task2");
 
     finish("task2", "failed");
@@ -88,13 +86,4 @@ describe("batch queue", () => {
     expect(useBatchStore.getState().items).toHaveLength(1);
   });
 
-  it("records auto-export failures on the item", async () => {
-    vi.mocked(autoExportTask).mockRejectedValueOnce(new Error("forbidden path"));
-    useBatchStore.getState().addFiles([{ name: "a.m4a", path: "/Volumes/x/a.m4a" }]);
-    useBatchStore.getState().start();
-    await until(() => created === 1);
-    finish("task1", "completed");
-    await until(() => Boolean(useBatchStore.getState().items[0].exportError));
-    expect(useBatchStore.getState().items[0]).toMatchObject({ status: "completed", exportError: "forbidden path" });
-  });
 });

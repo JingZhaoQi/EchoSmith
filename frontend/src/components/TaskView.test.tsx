@@ -1,16 +1,16 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TaskView } from "./TaskView";
 import { exportBaseName } from "../lib/constants";
-import { exportTask, saveExport } from "../lib/api";
+import { saveTaskFiles } from "../lib/api";
+import { useSaveStore } from "../hooks/useSaveStore";
 import { makeTask } from "../test/fixtures";
 
 vi.mock("../lib/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/api")>()),
-  exportTask: vi.fn(() => Promise.resolve(new Blob(["x"]))),
-  saveExport: vi.fn(() => Promise.resolve(true)),
+  saveTaskFiles: vi.fn(() => Promise.resolve([])),
 }));
 
 describe("TaskView", () => {
@@ -39,20 +39,34 @@ describe("TaskView", () => {
     expect(screen.getByText("纠错前缀")).toBeInTheDocument();
   });
 
-  it("offers SRT only once the task has finished", () => {
-    const { rerender } = render(<TaskView task={makeTask("t", "paused", { raw_text: "原文" })} />);
-    expect(screen.getByRole("button", { name: /SRT/ })).toBeDisabled();
-    expect(screen.getByRole("button", { name: /TXT/ })).toBeEnabled();
-    rerender(<TaskView task={makeTask("t", "completed", { raw_text: "原文" })} />);
-    expect(screen.getByRole("button", { name: /SRT/ })).toBeEnabled();
+  it("format buttons are lit/unlit default-save toggles", async () => {
+    const user = userEvent.setup();
+    useSaveStore.setState({ formats: ["txt"], results: {} });
+    render(<TaskView task={makeTask("t", "completed", { raw_text: "原文" })} />);
+    expect(screen.getByRole("button", { name: /TXT/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /Markdown/ })).toHaveAttribute("aria-pressed", "false");
+    await user.click(screen.getByRole("button", { name: /Markdown/ }));
+    await user.click(screen.getByRole("button", { name: /SRT/ }));
+    expect(useSaveStore.getState().formats).toEqual(["txt", "srt", "md"]);
+    expect(saveTaskFiles).not.toHaveBeenCalled(); // toggling never saves by itself
   });
 
-  it("exports Markdown through the save dialog with the source name", async () => {
+  it("Save writes the lit formats now, and is unavailable while the task runs", async () => {
     const user = userEvent.setup();
-    render(<TaskView task={makeTask("t", "completed", { raw_text: "原文", source: { name: "约13-21-38-1.m4a", type: "local" } })} />);
-    await user.click(screen.getByRole("button", { name: /Markdown/ }));
-    await waitFor(() => expect(saveExport).toHaveBeenCalledWith(expect.any(Blob), "约13-21-38-1.md"));
-    expect(exportTask).toHaveBeenCalledWith("t", "md");
+    const saveTask = vi.fn(async () => undefined);
+    useSaveStore.setState({ formats: ["txt", "md"], results: {}, saveTask });
+    const task = makeTask("t", "completed", { raw_text: "原文" });
+    const { rerender } = render(<TaskView task={makeTask("t", "running", { raw_text: "原文" })} />);
+    expect(screen.getByRole("button", { name: /^保存$/ })).toBeDisabled();
+    rerender(<TaskView task={task} />);
+    await user.click(screen.getByRole("button", { name: /^保存$/ }));
+    expect(saveTask).toHaveBeenCalledWith(task);
+  });
+
+  it("shows where the files were saved", () => {
+    useSaveStore.setState({ formats: ["txt"], results: { t: { paths: ["/x/讲道.txt", "/x/讲道.md"] } } });
+    render(<TaskView task={makeTask("t", "completed", { raw_text: "原文" })} />);
+    expect(screen.getByText("已保存：讲道.txt, 讲道.md")).toBeInTheDocument();
   });
 
   it("warns when some correction batches fell back to raw text", () => {

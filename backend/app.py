@@ -10,6 +10,8 @@ import tempfile
 import threading
 import time
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
 
@@ -68,7 +70,25 @@ class TaskControl:
 
 TASK_CONTROLS: dict[str, TaskControl] = {}
 
-app = FastAPI(title="EchoSmith Backend", version="0.1.0")
+
+async def _preload_model() -> None:
+    """Load the ASR model at startup so the first task starts recognizing immediately."""
+    try:
+        await engine.ensure_model()
+    except (
+        Exception
+    ) as exc:  # noqa: BLE001 - a missing model is reported when a task runs
+        print(f"[INIT] 模型预加载失败: {exc}", flush=True)
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    preload = asyncio.create_task(_preload_model())
+    yield
+    preload.cancel()
+
+
+app = FastAPI(title="EchoSmith Backend", version="0.1.0", lifespan=_lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -536,7 +556,7 @@ async def _run_task(task_id: str, source_info: dict, cleanup_paths: list[str]) -
         )
 
     def on_model(stage: str, _progress: float, _message: str) -> None:
-        push(message=f"模型{stage}")
+        push(message="模型加载中" if stage != "完成" else "准备音频")
 
     def on_asr(asr: float, stage: str, raw: str) -> None:
         done = asr >= 1.0

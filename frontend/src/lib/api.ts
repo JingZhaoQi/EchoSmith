@@ -452,16 +452,18 @@ export function connectTaskStream(taskId: string): WebSocket {
   return new WebSocket(url);
 }
 
-/** Save next to the source file: "<name>.<format>". Throws on the first failed write. */
-export async function autoExportTask(taskId: string, formats: ExportFormat[], sourceFilePath: string): Promise<void> {
+/** Write each format as "<dir>/<base>.<format>" (desktop only); returns the written paths. */
+export async function saveTaskFiles(taskId: string, formats: ExportFormat[], dir: string, base: string): Promise<string[]> {
   const { writeFile } = await import("@tauri-apps/plugin-fs");
-  const { dirname, extname, basename, join } = await import("@tauri-apps/api/path");
-  const sourceDir = await dirname(sourceFilePath);
-  const base = (await basename(sourceFilePath, await extname(sourceFilePath))).replace(/\.+$/, "");
+  const { join } = await import("@tauri-apps/api/path");
+  const written: string[] = [];
   for (const format of formats) {
     const blob = await exportTask(taskId, format);
-    await writeFile(await join(sourceDir, `${base}.${format}`), new Uint8Array(await blob.arrayBuffer()));
+    const path = await join(dir, `${base}.${format}`);
+    await writeFile(path, new Uint8Array(await blob.arrayBuffer()));
+    written.push(path);
   }
+  return written;
 }
 
 export const isTauri = (): boolean => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;

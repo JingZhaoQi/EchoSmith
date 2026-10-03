@@ -1,15 +1,7 @@
 // Batch queue for local files: lives outside components so switching views never loses progress.
 import { create } from "zustand";
 
-import {
-  autoExportTask,
-  cancelTask,
-  createTaskFromFile,
-  createTaskFromPath,
-  errorMessage,
-  type ExportFormat,
-  type TaskSnapshot,
-} from "../lib/api";
+import { cancelTask, createTaskFromFile, createTaskFromPath, errorMessage, type TaskSnapshot } from "../lib/api";
 import { useTasksStore, waitForTerminal } from "./useTasksStore";
 
 export const MEDIA_EXTENSIONS = [
@@ -22,12 +14,11 @@ export type BatchItemStatus = "pending" | "processing" | "completed" | "failed" 
 export interface BatchItem {
   id: string;
   name: string;
-  path?: string; // desktop: full path, enables auto-export next to the source
+  path?: string; // desktop: full path; results are auto-saved next to it (useAutoSave)
   file?: File; // browser fallback: uploaded
   status: BatchItemStatus;
   taskId?: string;
   error?: string;
-  exportError?: string;
 }
 
 export interface NewBatchFile {
@@ -38,12 +29,10 @@ export interface NewBatchFile {
 
 interface BatchState {
   items: BatchItem[];
-  formats: ExportFormat[];
   running: boolean;
   /** Adds supported media files; returns how many were accepted. */
   addFiles(files: NewBatchFile[]): number;
   removeItem(id: string): void;
-  toggleFormat(format: ExportFormat): void;
   start(): void;
   stop(): void;
   clear(): void;
@@ -54,7 +43,6 @@ const isMedia = (name: string) => MEDIA_EXTENSIONS.includes(name.split(".").pop(
 
 export const useBatchStore = create<BatchState>((set, get) => ({
   items: [],
-  formats: ["txt"],
   running: false,
   addFiles: (files) => {
     const known = new Set(get().items.map((item) => item.path).filter(Boolean));
@@ -69,10 +57,6 @@ export const useBatchStore = create<BatchState>((set, get) => ({
     if (item?.status === "processing" && item.taskId) void cancelTask(item.taskId).catch(() => undefined);
     set((state) => ({ items: state.items.filter((i) => i.id !== id) }));
   },
-  toggleFormat: (format) =>
-    set((state) => ({
-      formats: state.formats.includes(format) ? state.formats.filter((f) => f !== format) : [...state.formats, format],
-    })),
   start: () => {
     if (get().running || !get().items.some((i) => i.status === "pending")) return;
     set({ running: true });
@@ -125,10 +109,6 @@ async function runQueue(): Promise<void> {
         continue;
       }
       patch(item.id, { status: "completed" });
-      const formats = useBatchStore.getState().formats;
-      if (item.path && formats.length) {
-        await autoExportTask(taskId, formats, item.path).catch((error) => patch(item.id, { exportError: errorMessage(error) }));
-      }
     } catch (error) {
       patch(item.id, { status: "failed", error: errorMessage(error) });
     }

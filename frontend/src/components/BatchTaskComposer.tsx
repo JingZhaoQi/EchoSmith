@@ -4,6 +4,7 @@ import { CheckIcon, FileAudioIcon, PlayIcon, SquareIcon, Trash2Icon, UploadIcon,
 
 import { Button } from "./ui/button";
 import { MEDIA_EXTENSIONS, useBatchStore, type BatchItem } from "../hooks/useBatchStore";
+import { useSaveStore } from "../hooks/useSaveStore";
 import { EXPORT_FORMATS, isTauri, type ExportFormat } from "../lib/api";
 import { useT, type Messages } from "../lib/i18n";
 
@@ -23,7 +24,10 @@ const itemStatus = (item: BatchItem, t: Messages) =>
 
 export function BatchTaskComposer(): JSX.Element {
   const t = useT();
-  const { items, formats, running, addFiles, removeItem, toggleFormat, start, stop, clear } = useBatchStore();
+  const { items, running, addFiles, removeItem, start, stop, clear } = useBatchStore();
+  const formats = useSaveStore((state) => state.formats);
+  const toggleFormat = useSaveStore((state) => state.toggleFormat);
+  const saveResults = useSaveStore((state) => state.results);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -57,8 +61,10 @@ export function BatchTaskComposer(): JSX.Element {
       </div>
 
       <div>
-        <span className="mb-2 block text-sm font-medium text-slate-900 dark:text-white">{t.exportFormat}</span>
-        <div className="flex gap-2" role="group" aria-label={t.exportFormat}>
+        <span className="mb-2 block text-sm font-medium text-slate-900 dark:text-white" title={t.defaultSaveHint}>
+          {t.defaultSave}
+        </span>
+        <div className="flex gap-2" role="group" aria-label={t.defaultSave}>
           {EXPORT_FORMATS.map((format) => (
             <button
               key={format}
@@ -121,11 +127,15 @@ export function BatchTaskComposer(): JSX.Element {
                   <XIcon className="h-4 w-4" />
                 </button>
               </div>
-              {(item.error || item.exportError) && (
-                <p className="mt-1 truncate pl-6 text-[11px] text-red-500 dark:text-red-300" title={item.error ?? item.exportError}>
-                  {item.error ?? `${t.exportErrorPrefix}${item.exportError}`}
-                </p>
-              )}
+              {(() => {
+                const saveError = item.taskId ? saveResults[item.taskId]?.error : undefined;
+                const message = item.error ?? (saveError && `${t.exportErrorPrefix}${saveError}`);
+                return message ? (
+                  <p className="mt-1 truncate pl-6 text-[11px] text-red-500 dark:text-red-300" title={message}>
+                    {message}
+                  </p>
+                ) : null;
+              })()}
             </li>
           ))}
         </ul>
@@ -138,7 +148,7 @@ export function BatchTaskComposer(): JSX.Element {
             {t.stopBatch} · {t.processing(done, items.length)}
           </Button>
         ) : (
-          <Button className="flex-1 gap-2" disabled={pending === 0 || formats.length === 0} onClick={start}>
+          <Button className="flex-1 gap-2" disabled={pending === 0} onClick={start}>
             <PlayIcon className="h-4 w-4" />
             {pending === 0 && done > 0 ? t.allDone : pending > 0 && done > 0 ? t.resumeBatch(pending) : t.startBatch(pending)}
           </Button>
@@ -148,7 +158,6 @@ export function BatchTaskComposer(): JSX.Element {
           {t.clearList}
         </Button>
       </div>
-      {formats.length === 0 && <p className="-mt-3 text-xs text-amber-600 dark:text-amber-400">{t.selectFormatFirst}</p>}
     </div>
   );
 }

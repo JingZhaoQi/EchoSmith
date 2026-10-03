@@ -234,6 +234,8 @@ class _FakeRecognizer:
         class Stream:
             def accept_waveform(self, _sr: int, samples) -> None:
                 rec.window_lengths.append(len(samples))
+                if hasattr(rec, "on_decode"):
+                    rec.on_decode()
                 self.result = _FakeResult(*rec.scripts.pop(0))
 
         return Stream()
@@ -242,22 +244,62 @@ class _FakeRecognizer:
         return None
 
 
-def _engine_with(scripts, regions, correction=None) -> ASREngine:
+class _FakeVad:
+    """Emits each scripted (start, end) region once 0.5 s of audio after it has been fed."""
+
+    def __init__(self, regions: list[tuple[int, int]]) -> None:
+        self.pending = list(regions)
+        self.fed = 0
+
+    def accept(self, chunk) -> list[tuple[int, int]]:
+        self.fed += len(chunk)
+        ready = [r for r in self.pending if r[1] + 8000 <= self.fed]
+        self.pending = [r for r in self.pending if r not in ready]
+        return ready
+
+    def flush(self) -> list[tuple[int, int]]:
+        rest, self.pending = self.pending, []
+        return rest
+
+
+SECONDS = 20
+
+
+def _engine_with(scripts, regions, correction=None, seconds=SECONDS) -> ASREngine:
     import numpy as np
 
     engine = ASREngine(correction_engine=correction)
     engine._recognizer = _FakeRecognizer(scripts)
     engine._vad_config = object()
-    engine._detect_speech_regions = lambda samples, cb: regions  # type: ignore[method-assign]
-    engine._samples = np.zeros(16000 * 20, dtype=np.float32)
+    engine._new_vad = lambda: _FakeVad(regions)  # type: ignore[method-assign]
+    engine.chunks_read = 0  # type: ignore[attr-defined]
+
+    def pcm(_path, _gain):
+        for _ in range(seconds):
+            engine.chunks_read += 1  # type: ignore[attr-defined]
+            yield np.zeros(16000, dtype=np.int16)
+
+    engine._pcm_chunks = pcm  # type: ignore[method-assign]
     return engine
 
 
-def _run(engine: ASREngine, **kwargs):
-    with patch("asr_engine.probe_duration_ms", return_value=20_000), patch.object(
-        ASREngine, "_ensure_wav_format", lambda self, p: p
-    ), patch.object(ASREngine, "_read_wav", lambda self, p: (engine._samples, 16000)):
+def _run(engine: ASREngine, seconds=SECONDS, **kwargs):
+    with patch(
+        "asr_engine.probe_duration_ms", return_value=seconds * 1000
+    ), patch.object(ASREngine, "_measure_loudness_gain", staticmethod(lambda p: 0.0)):
         return engine._transcribe_sync(Path("x.wav"), **kwargs)
+
+
+def test_pipeline_streams_first_region_before_audio_is_fully_read() -> None:
+    scripts = [(list("一。"), [0.15, 0.3]), (list("二。"), [0.15, 0.3])]
+    engine = _engine_with(scripts, [(16000 * 1, 16000 * 2), (16000 * 15, 16000 * 16)])
+    seen: list[int] = []
+    engine._recognizer.on_decode = lambda: seen.append(engine.chunks_read)  # type: ignore[attr-defined]
+
+    result = _run(engine)
+
+    assert result.raw_text == "一。二。"
+    assert seen[0] < SECONDS / 2  # first text long before the whole file was decoded
 
 
 def test_pipeline_uses_token_timestamps_and_padded_windows() -> None:
@@ -307,15 +349,12 @@ def test_pipeline_correction_produces_retimed_corrected_segments() -> None:
 
 def test_pipeline_cancel_returns_partial_raw_result() -> None:
     scripts = [(list("一。"), [0.15, 0.3]), (list("二。"), [0.15, 0.3])]
-    engine = _engine_with(scripts, [(16000, 32000), (64000, 80000)])
-    calls = {"n": 0}
+    engine = _engine_with(scripts, [(16000, 32000), (16000 * 10, 16000 * 11)])
 
-    def cancelled() -> bool:
-        calls["n"] += 1
-        return calls["n"] > 2  # after the first window
-
-    result = _run(engine, cancelled_checker=cancelled)
+    # stop after ~5 s of audio: the first region is decoded, the second never is
+    result = _run(engine, cancelled_checker=lambda: engine.chunks_read > 5)
     assert result.cancelled and result.raw_text == "一。"
+    assert engine.chunks_read < SECONDS  # stopped reading the audio
 
 
 def test_segments_from_cues_cleans_text_keeps_times_and_drops_empty() -> None:
@@ -329,3 +368,18 @@ def test_segments_from_cues_cleans_text_keeps_times_and_drops_empty() -> None:
         (3, 1200, 2400, "开始。"),
         (4, 3000, 4000, "下一句？"),
     ]
+
+
+def test_forced_split_regions_do_not_share_audio() -> None:
+    scripts = [(list("长段。"), [0.2, 0.4, 0.6]), (list("接着。"), [0.2, 0.4, 0.6])]
+    sr = 16000
+    engine = _engine_with(scripts, [(0, 30 * sr), (30 * sr, 35 * sr)], seconds=40)
+
+    result = _run(engine, seconds=40)
+
+    first, second = engine._recognizer.window_lengths
+    assert first == 30 * sr  # no tail pad into the next region
+    assert second == int(
+        5.35 * sr
+    )  # starts at the shared boundary, keeps its own tail pad
+    assert result.raw_text == "长段。接着。"

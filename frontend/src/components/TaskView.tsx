@@ -1,11 +1,12 @@
-// Main area for an opened task: header with status + export, ASR and corrected text side by side.
+// Main area for an opened task: header with status + default-save formats, ASR and corrected text side by side.
 import { useState } from "react";
-import { AlertTriangleIcon, DownloadIcon, FileTextIcon, GlobeIcon, SparklesIcon } from "lucide-react";
+import { AlertTriangleIcon, CheckIcon, DownloadIcon, FileTextIcon, GlobeIcon, SparklesIcon } from "lucide-react";
 
 import { TranscriptPanel, type Tone } from "./TranscriptPanel";
 import { Button } from "./ui/button";
-import { EXPORT_FORMATS, errorMessage, exportTask, saveExport, type ExportFormat, type TaskSnapshot } from "../lib/api";
-import { exportBaseName, getSourceLabel } from "../lib/constants";
+import { useSaveStore } from "../hooks/useSaveStore";
+import { EXPORT_FORMATS, type ExportFormat, type TaskSnapshot } from "../lib/api";
+import { getSourceLabel } from "../lib/constants";
 import { useLocaleStore, useT } from "../lib/i18n";
 import { taskStatusLabel } from "../lib/taskStatus";
 
@@ -14,27 +15,24 @@ const FORMAT_LABEL: Record<ExportFormat, string> = { txt: "TXT", srt: "SRT", md:
 export function TaskView({ task }: { task: TaskSnapshot }): JSX.Element {
   const t = useT();
   const locale = useLocaleStore((state) => state.locale);
-  const [saving, setSaving] = useState<ExportFormat | null>(null);
-  const [exportError, setExportError] = useState<string | null>(null);
+  const formats = useSaveStore((state) => state.formats);
+  const toggleFormat = useSaveStore((state) => state.toggleFormat);
+  const saveTask = useSaveStore((state) => state.saveTask);
+  const saveResult = useSaveStore((state) => state.results[task.id]);
+  const [saving, setSaving] = useState(false);
 
   const running = task.status === "running" || task.status === "queued";
   const finished = task.status === "completed" || task.status === "cancelled";
   const hasText = Boolean(task.result_text || task.raw_text);
-  const canExport = (format: ExportFormat) =>
-    format === "srt" ? finished : hasText && (finished || task.status === "paused" || task.status === "failed");
+  const canSave = hasText && (finished || task.status === "paused" || task.status === "failed");
   const isUrl = task.source.type === "url";
 
-  const handleExport = async (format: ExportFormat) => {
-    setExportError(null);
-    setSaving(format);
-    try {
-      await saveExport(await exportTask(task.id, format), `${exportBaseName(task)}.${format}`);
-    } catch (error) {
-      setExportError(`${t.exportFailed}: ${errorMessage(error)}`);
-    } finally {
-      setSaving(null);
-    }
+  const handleSave = async () => {
+    setSaving(true);
+    await saveTask(task);
+    setSaving(false);
   };
+
 
   // ASR column
   const asrDone = task.asr_progress >= 1;
@@ -84,27 +82,51 @@ export function TaskView({ task }: { task: TaskSnapshot }): JSX.Element {
             </span>
           )}
         </div>
-        <div className="flex flex-shrink-0 items-center gap-2" role="group" aria-label={t.exportLabel}>
-          {EXPORT_FORMATS.map((format) => (
-            <Button
-              key={format}
-              variant="secondary"
-              size="sm"
-              className="gap-1.5"
-              disabled={!canExport(format) || saving !== null}
-              title={format === "srt" && !finished ? t.srtAfterFinish : `${t.exportLabel} ${FORMAT_LABEL[format]}`}
-              onClick={() => void handleExport(format)}
-            >
-              {saving === format ? (
-                <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
-              ) : (
-                <DownloadIcon className="h-3.5 w-3.5" />
-              )}
-              {FORMAT_LABEL[format]}
-            </Button>
-          ))}
+        <div className="flex flex-shrink-0 items-center gap-2">
+          <span className="text-xs text-slate-500 dark:text-slate-400" title={t.defaultSaveHint}>
+            {t.defaultSave}
+          </span>
+          <div className="flex items-center gap-1.5" role="group" aria-label={t.defaultSave}>
+            {EXPORT_FORMATS.map((format) => {
+              const lit = formats.includes(format);
+              return (
+                <button
+                  key={format}
+                  type="button"
+                  aria-pressed={lit}
+                  title={lit && formats.length === 1 ? t.keepOneFormat : t.defaultSaveHint}
+                  onClick={() => toggleFormat(format)}
+                  className={`inline-flex h-8 items-center gap-1.5 rounded-xl px-3 text-sm font-medium transition-all ${
+                    lit
+                      ? "bg-slate-950 text-white shadow-sm dark:bg-white dark:text-slate-950"
+                      : "glass-field text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100"
+                  }`}
+                >
+                  {lit && <CheckIcon className="h-3.5 w-3.5" />}
+                  {FORMAT_LABEL[format]}
+                </button>
+              );
+            })}
+          </div>
+          <Button variant="secondary" size="sm" className="gap-1.5" disabled={!canSave || saving} onClick={() => void handleSave()}>
+            {saving ? (
+              <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
+            ) : (
+              <DownloadIcon className="h-3.5 w-3.5" />
+            )}
+            {t.saveNow}
+          </Button>
         </div>
-        {exportError && <p className="w-full text-xs text-red-600 dark:text-red-400">{exportError}</p>}
+        {saveResult && (
+          <p
+            className={`w-full truncate text-xs ${saveResult.error ? "text-red-600 dark:text-red-400" : "text-emerald-700 dark:text-emerald-300"}`}
+            title={saveResult.error ?? saveResult.paths.join("\n")}
+          >
+            {saveResult.error
+              ? `${t.exportFailed}: ${saveResult.error}`
+              : t.savedFiles(saveResult.paths.map((p) => p.split(/[\\/]/).pop()).join(", "))}
+          </p>
+        )}
       </header>
 
       {task.error && (

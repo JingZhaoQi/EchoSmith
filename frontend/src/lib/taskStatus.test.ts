@@ -18,6 +18,11 @@ describe("taskStatusLabel", () => {
   it("shows the downloader's message while downloading, localized", () => {
     expect(taskStatusLabel({ ...base, phase: "downloading", message: "下载中 45%" }, t, "en")).toBe("Downloading 45%");
   });
+  it("shows the stage (model loading, preparing audio) before transcription starts", () => {
+    expect(taskStatusLabel({ ...base, asr_progress: 0, message: "模型加载中" }, t, "zh")).toBe("模型加载中");
+    expect(taskStatusLabel({ ...base, asr_progress: 0, message: "准备音频" }, t, "en")).toBe("Preparing audio");
+    expect(taskStatusLabel({ ...base, asr_progress: 0.3, message: "转写中" }, t, "zh")).toBe("转写中 30%");
+  });
   it("falls back to the status name when not running", () => {
     expect(taskStatusLabel({ ...base, status: "paused" }, t, "zh")).toBe("暂停中");
   });

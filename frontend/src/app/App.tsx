@@ -15,6 +15,7 @@ import { ensureBackendBase, fetchSettings, listTaskSummaries } from "../lib/api"
 import { isActive, useTasksStore } from "../hooks/useTasksStore";
 import { useTaskSubscription } from "../hooks/useTaskSubscription";
 import { useFileDrop } from "../hooks/useFileDrop";
+import { useAutoSave } from "../hooks/useAutoSave";
 import { useLocaleStore, useT } from "../lib/i18n";
 
 const queryClient = new QueryClient();
@@ -98,6 +99,7 @@ function AppShell(): JSX.Element {
   }, [tasksQuery.data, mergeSummaries]);
 
   useTaskSubscription(activeTaskId);
+  useAutoSave();
 
   const onRejected = useCallback(() => {
     setDropNotice(t.unsupportedFormat);
