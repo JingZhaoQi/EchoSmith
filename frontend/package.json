@@ -1,6 +1,6 @@
 {
   "name": "echosmith-frontend",
-  "version": "1.4.5",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -26,6 +26,9 @@
     "zustand": "^4.5.2"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "6.9.1",
+    "@testing-library/react": "16.3.0",
+    "@testing-library/user-event": "14.6.1",
     "@types/node": "^20.11.30",
     "@types/react": "^18.2.73",
     "@types/react-dom": "^18.2.22",
@@ -36,11 +39,13 @@
     "eslint": "^8.57.0",
     "eslint-plugin-react-hooks": "^4.6.0",
     "eslint-plugin-react-refresh": "^0.4.6",
+    "jsdom": "27.1.0",
     "postcss": "^8.4.35",
     "tailwind-merge": "^2.2.1",
     "tailwindcss": "^3.4.3",
     "tailwindcss-animate": "^1.0.7",
     "typescript": "^5.4.3",
-    "vite": "^5.1.5"
+    "vite": "^5.1.5",
+    "vitest": "4.0.6"
   }
 }

@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import os
+import platform
 import shutil
 import tempfile
+import threading
 import time
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from dataclasses import asdict
 from pathlib import Path
 
 from fastapi import (
@@ -26,6 +31,11 @@ from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 try:
     from asr_engine import ASREngine
+    from correction_engine import CorrectionEngine, hotwords_in_budget
+    from exporters import EXPORT_FORMATS, render_export
+    from hotwords import HotwordManager
+    from settings import SettingsManager
+    from task_progress import TaskProgress
     from task_store import TaskRecord, TaskStatus, task_store
     from url_downloader import (
         download_audio,
@@ -35,6 +45,11 @@ try:
     )
 except ImportError:
     from .asr_engine import ASREngine
+    from .correction_engine import CorrectionEngine, hotwords_in_budget
+    from .exporters import EXPORT_FORMATS, render_export
+    from .hotwords import HotwordManager
+    from .settings import SettingsManager
+    from .task_progress import TaskProgress
     from .task_store import TaskRecord, TaskStatus, task_store
     from .url_downloader import (
         download_audio,
@@ -55,7 +70,25 @@ class TaskControl:
 
 TASK_CONTROLS: dict[str, TaskControl] = {}
 
-app = FastAPI(title="EchoSmith Backend", version="0.1.0")
+
+async def _preload_model() -> None:
+    """Load the ASR model at startup so the first task starts recognizing immediately."""
+    try:
+        await engine.ensure_model()
+    except (
+        Exception
+    ) as exc:  # noqa: BLE001 - a missing model is reported when a task runs
+        print(f"[INIT] 模型预加载失败: {exc}", flush=True)
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    preload = asyncio.create_task(_preload_model())
+    yield
+    preload.cancel()
+
+
+app = FastAPI(title="EchoSmith Backend", version="0.1.0", lifespan=_lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -66,10 +99,52 @@ app.add_middleware(
 UPLOAD_ROOT = Path(tempfile.gettempdir()) / "echosmith_uploads"
 UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
 
-engine = ASREngine()
+
+def _get_hotwords_path() -> Path:
+    if platform.system() == "Darwin":
+        return (
+            Path.home()
+            / "Library"
+            / "Application Support"
+            / "com.echosmith.app"
+            / "hotwords.json"
+        )
+    elif platform.system() == "Windows":
+        appdata = os.environ.get("APPDATA", "")
+        if appdata:
+            return Path(appdata) / "echosmith" / "hotwords.json"
+    return Path.home() / ".config" / "echosmith" / "hotwords.json"
+
+
+hotword_manager = HotwordManager(_get_hotwords_path())
+settings_manager = SettingsManager(_get_hotwords_path().parent / "settings.json")
+
+
+def _build_correction_engine() -> CorrectionEngine | None:
+    settings = settings_manager.get()
+    cfg = settings.correction
+    if cfg.mode == "none":
+        return None
+    return CorrectionEngine(
+        mode=cfg.mode,
+        hot_words=hotword_manager.list_all(),
+        api_provider=cfg.api_provider,
+        api_key=cfg.api_key,
+        api_model=cfg.api_model,
+        api_base_url=cfg.api_base_url,
+        on_api_call=lambda segs, failed: settings_manager.record_api_call(segs, failed),
+    )
+
+
+_correction_engine = _build_correction_engine()
+_settings = settings_manager.get()
+engine = ASREngine(
+    correction_engine=_correction_engine,
+    asr_model=_settings.transcription.asr_model,
+)
 API_TOKEN = os.environ.get("ECHOSMITH_TOKEN")
 UPLOAD_FILE_REQUIRED = File(...)
-LANGUAGE_FORM_FIELD = Form(default="zh")
+LANGUAGE_FORM_FIELD = Form(default="auto")
 
 
 @app.get("/api/health")
@@ -112,6 +187,8 @@ async def healthcheck() -> JSONResponse:
             "download_message": download_message,
             "model_cache_dir": model_cache_dir,
             "ytdlp": ytdlp_ok,
+            "correction_mode": settings_manager.get().correction.mode,
+            "asr_model": settings_manager.get().transcription.asr_model,
             "status": "ok" if ffmpeg_ok else "degraded",
             "debug": debug_info,
         }
@@ -137,10 +214,101 @@ async def trigger_model_download(_: None = Depends(verify_token)) -> JSONRespons
     return JSONResponse({"status": "started"})
 
 
+def _hotwords_payload() -> dict:
+    """The list plus how many of its words fit into the correction prompt."""
+    words = hotword_manager.list_all()
+    return {"words": words, "in_prompt": len(hotwords_in_budget(words))}
+
+
+@app.get("/api/hotwords")
+async def list_hotwords(_: None = Depends(verify_token)) -> JSONResponse:
+    return JSONResponse(_hotwords_payload())
+
+
+@app.post("/api/hotwords")
+async def add_hotword(
+    request: Request, _: None = Depends(verify_token)
+) -> JSONResponse:
+    body = await request.json()
+    word = body.get("word")
+    if not isinstance(word, str) or not word.strip():
+        raise HTTPException(status_code=400, detail="热词不能为空")
+    word = word.strip()
+    hotword_manager.add(word)
+    return JSONResponse(_hotwords_payload())
+
+
+@app.post("/api/hotwords/import")
+async def import_hotwords(
+    request: Request, _: None = Depends(verify_token)
+) -> JSONResponse:
+    """Bulk import hotwords, replacing existing list."""
+    body = await request.json()
+    new_words = body.get("words", [])
+    if not isinstance(new_words, list):
+        raise HTTPException(status_code=400, detail="words must be a list")
+    # Clear and re-add
+    for word in hotword_manager.list_all():
+        hotword_manager.remove(word)
+    for word in new_words:
+        w = str(word).strip()
+        if w:
+            hotword_manager.add(w)
+    return JSONResponse(_hotwords_payload())
+
+
+@app.delete("/api/hotwords/{word:path}")  # words may contain "/" (e.g. AC/DC)
+async def remove_hotword(word: str, _: None = Depends(verify_token)) -> JSONResponse:
+    hotword_manager.remove(word)
+    return JSONResponse(_hotwords_payload())
+
+
+@app.get("/api/settings")
+async def get_settings(_: None = Depends(verify_token)) -> JSONResponse:
+    return JSONResponse(settings_manager.snapshot())
+
+
+@app.post("/api/settings")
+async def update_settings(
+    request: Request, _: None = Depends(verify_token)
+) -> JSONResponse:
+    global _correction_engine
+    body = await request.json()
+    transcription = body.get("transcription", {})
+    if transcription:
+        settings_manager.update_transcription(**transcription)
+
+    correction = body.get("correction", {})
+    if correction:
+        # If api_key is masked placeholder, keep the existing key
+        if "****" in str(correction.get("api_key") or ""):
+            del correction["api_key"]
+        settings_manager.update_correction(**correction)
+
+    # Rebuild correction engine with new settings
+    _correction_engine = _build_correction_engine()
+    engine._correction_engine = _correction_engine
+    latest = settings_manager.get().transcription
+    engine.set_transcription_options(latest.asr_model)
+
+    return JSONResponse(settings_manager.snapshot())
+
+
+@app.post("/api/settings/reset-usage")
+async def reset_usage(_: None = Depends(verify_token)) -> JSONResponse:
+    settings_manager.reset_usage()
+    return JSONResponse(settings_manager.snapshot())
+
+
 @app.get("/api/tasks")
-async def list_tasks(_: None = Depends(verify_token)) -> JSONResponse:
+async def list_tasks(
+    summary: bool = False, _: None = Depends(verify_token)
+) -> JSONResponse:
+    """All tasks; summary=true omits texts so the list can be polled cheaply."""
     records = await task_store.list_tasks()
-    return JSONResponse([task.snapshot() for task in records])
+    return JSONResponse(
+        [task.summary() if summary else task.snapshot() for task in records]
+    )
 
 
 @app.get("/api/tasks/{task_id}")
@@ -190,7 +358,7 @@ async def create_task_from_local(
     """Accept a local file path and transcribe directly from disk."""
     body = await request.json()
     path = body.get("path", "").strip()
-    language = body.get("language", "zh")
+    language = body.get("language", "auto")
 
     if not path:
         raise HTTPException(status_code=400, detail="路径不能为空")
@@ -223,7 +391,7 @@ async def create_task_from_url(
 ) -> JSONResponse:
     body = await request.json()
     raw_url = body.get("url", "").strip()
-    language = body.get("language", "zh")
+    language = body.get("language", "auto")
 
     if not raw_url:
         raise HTTPException(status_code=400, detail="URL 不能为空")
@@ -237,7 +405,9 @@ async def create_task_from_url(
     try:
         # Fetch title without downloading (fast)
         try:
-            title = extract_video_title(url)
+            title = await asyncio.to_thread(
+                extract_video_title, url
+            )  # network call: keep the event loop free
         except Exception:
             title = url
 
@@ -291,6 +461,17 @@ async def delete_task(task_id: str, _: None = Depends(verify_token)) -> JSONResp
     # Delete the task from store
     await task_store.delete_task(task_id)
     return JSONResponse({"status": "deleted", "id": task_id})
+
+
+@app.post("/api/tasks/{task_id}/cancel")
+async def cancel_task(task_id: str, _: None = Depends(verify_token)) -> JSONResponse:
+    """Stop a task but keep it (and its partial transcript) in the library."""
+    control = TASK_CONTROLS.get(task_id)
+    if not control:
+        raise HTTPException(status_code=404, detail="任务不存在或已结束")
+    control.cancelled = True
+    control.pause_event.set()
+    return JSONResponse({"id": task_id, "status": "cancelling"})
 
 
 @app.post("/api/tasks/{task_id}/pause")
@@ -351,164 +532,156 @@ async def task_updates(task_id: str, websocket: WebSocket) -> None:
 async def _run_task(task_id: str, source_info: dict, cleanup_paths: list[str]) -> None:
     loop = asyncio.get_running_loop()
     control = TASK_CONTROLS.get(task_id)
+    is_url = source_info.get("type") == "url"
+    correction_enabled = engine.correction_active()
+    progress = TaskProgress(has_download=is_url, correction_enabled=correction_enabled)
+    finished = (
+        threading.Event()
+    )  # set before the final state is written; late callbacks are dropped
 
-    def progress_cb(progress: float, stage: str, partial: str) -> None:
-        if control and not control.pause_event.is_set():
-            status = TaskStatus.PAUSED
-        else:
-            status = TaskStatus.RUNNING
+    def cancelled() -> bool:
+        return bool(control and control.cancelled)
+
+    def push(**changes) -> None:
+        """Thread-safe live update; keeps PAUSED while paused and never touches a finished task."""
+        if finished.is_set():
+            return
+        paused = control is not None and not control.pause_event.is_set()
+        status = TaskStatus.PAUSED if paused else TaskStatus.RUNNING
         asyncio.run_coroutine_threadsafe(
-            task_store.update_task(
-                task_id,
-                status=status,
-                progress=progress,
-                message=stage,
-                result_text=partial,
-                log={
-                    "timestamp": time.time(),
-                    "type": "progress",
-                    "message": stage,
-                    "progress": progress,
-                },
-            ),
-            loop,
+            task_store.update_task(task_id, status=status, **changes), loop
         )
 
-    def model_download_cb(stage: str, progress: float, message: str) -> None:
-        """Callback for model download progress."""
-        asyncio.run_coroutine_threadsafe(
-            task_store.update_task(
-                task_id,
-                status=TaskStatus.RUNNING,
-                progress=progress * 0.3,  # Model download takes first 30% of progress
-                message=f"模型{stage}",
-                log={
-                    "timestamp": time.time(),
-                    "type": "model_download",
-                    "stage": stage,
-                    "message": message,
-                    "progress": progress,
-                },
-            ),
-            loop,
+    def on_download(ratio: float, message: str) -> None:
+        push(
+            phase="downloading",
+            message=message,
+            progress=progress.overall(download=ratio),
         )
+
+    def on_model(stage: str, _progress: float, _message: str) -> None:
+        push(message="模型加载中" if stage != "完成" else "准备音频")
+
+    def on_asr(asr: float, stage: str, raw: str) -> None:
+        done = asr >= 1.0
+        changes = {
+            "phase": "correcting" if done and correction_enabled else "transcribing",
+            "asr_progress": asr,
+            "message": stage,
+            "raw_text": raw,
+            "progress": progress.overall(asr=asr),
+        }
+        if not correction_enabled:
+            changes["result_text"] = raw
+        push(**changes)
+
+    def on_correction(text: str, ratio: float) -> None:
+        overall = progress.overall(correction=ratio)
+        push(
+            result_text=text, correction_progress=progress.correction, progress=overall
+        )
+
+    def log(kind: str, message: str) -> dict:
+        return {"timestamp": time.time(), "type": kind, "message": message}
 
     try:
         await task_store.update_task(
-            task_id, status=TaskStatus.RUNNING, message="准备中", progress=0.01
+            task_id,
+            status=TaskStatus.RUNNING,
+            phase="downloading" if is_url else "transcribing",
+            message="准备中",
+            correction_enabled=correction_enabled,
+            progress=0.01,
         )
-
-        # Initialize engine with download callback
-        if engine._download_callback is None:
-            engine._download_callback = model_download_cb
-
-        if source_info.get("type") == "url":
-            # --- URL download branch ---
-            await task_store.update_task(task_id, message="下载中…", progress=0.01)
-
-            def _dl_progress(ratio: float, msg: str) -> None:
-                # Map download progress to 0 ~ 0.3
-                mapped = ratio * 0.3
-                asyncio.run_coroutine_threadsafe(
-                    task_store.update_task(
-                        task_id,
-                        status=TaskStatus.RUNNING,
-                        progress=mapped,
-                        message=msg,
-                        log={
-                            "timestamp": time.time(),
-                            "type": "progress",
-                            "message": msg,
-                            "progress": mapped,
-                        },
-                    ),
-                    loop,
-                )
-
-            downloaded_path = await loop.run_in_executor(
+        if is_url:
+            downloaded = await loop.run_in_executor(
                 None,
                 lambda: download_audio(
                     source_info["url"],
                     task_id,
-                    progress_cb=_dl_progress,
-                    cancelled_checker=(lambda: control.cancelled) if control else None,
+                    progress_cb=on_download,
+                    cancelled_checker=cancelled,
                 ),
             )
-            cleanup_paths.append(downloaded_path)
-            audio_path = Path(downloaded_path)
+            cleanup_paths.append(downloaded)
+            audio_path = Path(downloaded)
         else:
             audio_path = Path(source_info["path"])
 
-        await task_store.update_task(
-            task_id,
-            message="转写中",
-            progress=0.05 if source_info.get("type") != "url" else 0.30,
-        )
-
-        # Apply language setting from task
-        await engine.set_language(source_info.get("language", "zh"))
-
-        # For URL tasks, map transcription progress from 0.3 to 1.0
-        if source_info.get("type") == "url":
-
-            def url_progress_cb(progress: float, stage: str, partial: str) -> None:
-                mapped_progress = 0.3 + progress * 0.7
-                progress_cb(mapped_progress, stage, partial)
-
-            actual_progress_cb = url_progress_cb
-        else:
-            actual_progress_cb = progress_cb
+        if engine._correction_engine:
+            engine._correction_engine.set_hot_words(hotword_manager.list_all())
+        engine.set_transcription_options(settings_manager.get().transcription.asr_model)
 
         result = await engine.transcribe(
             audio_path,
-            progress_cb=actual_progress_cb,
+            progress_cb=on_asr,
             pause_event=control.pause_event if control else None,
-            cancelled_checker=(lambda: control.cancelled) if control else None,
+            cancelled_checker=cancelled,
+            correction_cb=on_correction,
+            model_progress_cb=on_model,
         )
-
-        if control and control.cancelled:
-            updated = await task_store.update_task(
+        finished.set()
+        final = {
+            "raw_text": result.raw_text,
+            "segments": [asdict(seg) for seg in result.segments],
+            "corrected_segments": [asdict(seg) for seg in result.corrected_segments],
+            "correction_failed_batches": result.correction_failed_batches,
+            "phase": "done",
+        }
+        if cancelled() or result.cancelled:
+            if not correction_enabled:
+                final["result_text"] = result.text
+            # with correction on, keep the corrected text streamed so far
+            await task_store.update_task(
                 task_id,
                 status=TaskStatus.CANCELLED,
                 message="已取消",
-                log={
-                    "timestamp": time.time(),
-                    "type": "info",
-                    "message": "任务中途取消",
-                },
+                log=log("info", "任务已取消"),
+                **final,
             )
-            if updated is None:
-                # Task was deleted, exit gracefully
-                return
-        else:
-            updated = await task_store.update_task(
-                task_id,
-                status=TaskStatus.COMPLETED,
-                progress=1.0,
-                message="完成",
-                result_text=result.text,
-                segments=[segment.__dict__ for segment in result.segments],
-                log={"timestamp": time.time(), "type": "info", "message": "任务完成"},
-            )
-            if updated is None:
-                # Task was deleted, exit gracefully
-                return
+            return
+        failed = result.correction_failed_batches
+        await task_store.update_task(
+            task_id,
+            status=TaskStatus.COMPLETED,
+            progress=1.0,
+            asr_progress=1.0,
+            correction_progress=1.0 if correction_enabled else None,
+            result_text=result.text,
+            message=(
+                "完成" if not failed else f"完成（{failed} 批纠错失败，已保留原文）"
+            ),
+            log=log(
+                "warning" if failed else "info",
+                "任务完成" if not failed else f"{failed} 批纠错失败，已保留原文",
+            ),
+            **final,
+        )
     except Exception as exc:  # noqa: BLE001
         import traceback
 
+        finished.set()
+        if cancelled():
+            await task_store.update_task(
+                task_id,
+                status=TaskStatus.CANCELLED,
+                phase="done",
+                message="已取消",
+                log=log("info", "任务已取消"),
+            )
+            return
         print(f"[TASK ERROR] {task_id}: {exc}", flush=True)
         traceback.print_exc()
-        updated = await task_store.update_task(
+        await task_store.update_task(
             task_id,
             status=TaskStatus.FAILED,
+            phase="done",
             message="失败",
             error=str(exc),
-            log={"timestamp": time.time(), "type": "error", "message": str(exc)},
+            log=log("error", str(exc)),
         )
-        if updated is None:
-            # Task was deleted, exit gracefully
-            return
     finally:
+        finished.set()
         for path in cleanup_paths:
             Path(path).unlink(missing_ok=True)
         TASK_CONTROLS.pop(task_id, None)
@@ -531,161 +704,29 @@ def _command_exists(cmd: str) -> bool:
     return shutil.which(cmd) is not None
 
 
-def _split_segment_text(text: str, max_chars: int = 40) -> list[str]:
-    """Split long text into smaller chunks respecting punctuation, then length."""
-    text = (text or "").strip()
-    if not text:
-        return []
-
-    # First split by sentence-ending punctuation
-    parts: list[str] = []
-    buf = ""
-    for ch in text:
-        buf += ch
-        if ch in "。！？!?；;，,":
-            parts.append(buf.strip())
-            buf = ""
-    if buf.strip():
-        parts.append(buf.strip())
-
-    # Flatten any overly long part into fixed-size chunks
-    final_parts: list[str] = []
-    for part in parts or [text]:
-        if len(part) <= max_chars:
-            final_parts.append(part)
-            continue
-        for i in range(0, len(part), max_chars):
-            final_parts.append(part[i : i + max_chars].strip())
-    return [p for p in final_parts if p]
-
-
-def _normalize_sub_durations(
-    durations: list[int], target: int, min_duration: int
-) -> list[int]:
-    """Adjust durations to sum to target while enforcing min_duration."""
-    if not durations:
-        return []
-    durations = [max(min_duration, d) for d in durations]
-    current = sum(durations)
-    if current == 0:
-        return [target // len(durations)] * len(durations)
-
-    # Scale down or up to match target
-    scaled = [max(min_duration, int(d * target / current)) for d in durations]
-    diff = target - sum(scaled)
-    if diff != 0:
-        # Distribute remainder across items
-        for i in range(len(scaled)):
-            if diff == 0:
-                break
-            scaled[i] += 1 if diff > 0 else -1
-            diff += -1 if diff > 0 else 1
-    return scaled
-
-
-def _split_segment(
-    seg: dict, max_chars: int = 40, max_duration_ms: int = 6000
-) -> list[dict]:
-    """Split a segment into smaller SRT-friendly pieces."""
-    start_ms = int(seg.get("start_ms", 0))
-    end_ms = int(seg.get("end_ms", start_ms))
-    text = seg.get("text", "") or ""
-    if end_ms <= start_ms:
-        # Fallback duration: 250ms per 10 chars, minimum 2s
-        end_ms = start_ms + max(2000, int(len(text) / 10 * 250))
-
-    duration = end_ms - start_ms
-    pieces = _split_segment_text(text, max_chars=max_chars)
-    if not pieces:
-        return []
-
-    # If already short enough and duration is acceptable, keep as-is
-    if len(pieces) == 1 and duration <= max_duration_ms and len(text) <= max_chars:
-        return [
-            {
-                "start_ms": start_ms,
-                "end_ms": end_ms,
-                "text": text,
-            }
-        ]
-
-    # Allocate durations proportionally to text length
-    weights = [len(p) for p in pieces]
-    total_weight = sum(weights) or 1
-    raw_durations = [max(1, int(duration * w / total_weight)) for w in weights]
-    sub_durations = _normalize_sub_durations(raw_durations, duration, min_duration=800)
-
-    sub_segments = []
-    cursor = start_ms
-    for piece, seg_dur in zip(pieces, sub_durations):
-        sub_segments.append(
-            {
-                "start_ms": cursor,
-                "end_ms": cursor + seg_dur,
-                "text": piece,
-            }
-        )
-        cursor += seg_dur
-    return sub_segments
-
-
-def _segments_to_srt(segments: list[dict]) -> str:
-    lines = []
-    index = 1
-    for seg in segments:
-        for sub in _split_segment(seg):
-            start = _ms_to_timestamp(sub.get("start_ms", 0))
-            end = _ms_to_timestamp(sub.get("end_ms", 0))
-            text = sub.get("text", "")
-            lines.append(f"{index}\n{start} --> {end}\n{text}\n")
-            index += 1
-    return "\n".join(lines)
-
-
-def _ms_to_timestamp(ms: int) -> str:
-    seconds, millis = divmod(int(ms), 1000)
-    minutes, seconds = divmod(seconds, 60)
-    hours, minutes = divmod(minutes, 60)
-    return f"{hours:02d}:{minutes:02d}:{seconds:02d},{millis:03d}"
-
-
 @app.get("/api/tasks/{task_id}/export")
 async def export_task(
     task_id: str, format: str = "txt", _: None = Depends(verify_token)
-):
+) -> PlainTextResponse:
     try:
         record = await task_store.get_task(task_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="任务不存在") from exc
-
-    format = format.lower()
-    if format == "txt":
-        return PlainTextResponse(record.result_text or "", media_type="text/plain")
-    if format == "json":
-        return JSONResponse(
-            {
-                "id": record.id,
-                "text": record.result_text,
-                "segments": record.segments,
-            }
-        )
-    if format == "srt":
-        segments = record.segments
-        if not segments and record.result_text:
-            text = record.result_text.strip()
-            if text:
-                segments = [
-                    {
-                        "index": 0,
-                        "start_ms": 0,
-                        "end_ms": max(2000, len(text.split()) * 500),
-                        "text": text,
-                    }
-                ]
-        srt_body = _segments_to_srt(segments)
-        return PlainTextResponse(srt_body, media_type="application/x-subrip")
-
-    raise HTTPException(status_code=400, detail="不支持的导出格式")
+    fmt = format.lower()
+    if fmt not in EXPORT_FORMATS:
+        raise HTTPException(status_code=400, detail="不支持的导出格式")
+    cues = record.corrected_segments or record.segments
+    name = str(record.source.get("name") or record.id)
+    # files: drop the extension; video titles are kept whole ("Dr. Smith talk", "AC/DC live")
+    title = (
+        name
+        if record.source.get("type") == "url"
+        else os.path.splitext(os.path.basename(name))[0]
+    )
+    body, media = render_export(
+        fmt, title, cues, record.result_text or record.raw_text or ""
+    )
+    return PlainTextResponse(body, media_type=f"{media}; charset=utf-8")
 
 
 @app.post("/api/download")

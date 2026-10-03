@@ -19,34 +19,76 @@ class TaskStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
+MAX_SNAPSHOT_LOGS = 30
+MAX_STORED_LOGS = 200
+
+
 @dataclass
 class TaskRecord:
     id: str
     status: TaskStatus = TaskStatus.QUEUED
-    progress: float = 0.0
+    progress: float = 0.0  # overall, never decreases
     message: str = ""
-    result_text: str | None = None
-    segments: list[dict[str, Any]] = field(default_factory=list)
+    phase: str = "queued"  # queued | downloading | transcribing | correcting | done
+    asr_progress: float = 0.0
+    correction_enabled: bool = False
+    correction_progress: float = 0.0
+    correction_failed_batches: int = 0
+    result_text: str | None = (
+        None  # corrected text when correction is enabled, else the raw transcript
+    )
+    raw_text: str | None = None
+    segments: list[dict[str, Any]] = field(default_factory=list)  # raw cues
+    corrected_segments: list[dict[str, Any]] = field(default_factory=list)
     source: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     logs: list[dict[str, Any]] = field(default_factory=list)
 
-    def snapshot(self) -> dict[str, Any]:
+    def summary(self) -> dict[str, Any]:
+        """Lightweight state for the task list (no text)."""
         return {
             "id": self.id,
             "status": self.status.value,
             "progress": self.progress,
             "message": self.message,
-            "result_text": self.result_text,
-            "segments": self.segments,
+            "phase": self.phase,
+            "asr_progress": self.asr_progress,
+            "correction_enabled": self.correction_enabled,
+            "correction_progress": self.correction_progress,
+            "correction_failed_batches": self.correction_failed_batches,
             "source": self.source,
             "error": self.error,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
-            "logs": self.logs,
         }
+
+    def snapshot(self) -> dict[str, Any]:
+        """Live state for the open task: texts and recent logs, but not the cue lists (export reads those)."""
+        return {
+            **self.summary(),
+            "result_text": self.result_text,
+            "raw_text": self.raw_text,
+            "logs": self.logs[-MAX_SNAPSHOT_LOGS:],
+        }
+
+
+_UPDATABLE = {
+    "status",
+    "progress",
+    "message",
+    "phase",
+    "asr_progress",
+    "correction_enabled",
+    "correction_progress",
+    "correction_failed_batches",
+    "result_text",
+    "raw_text",
+    "segments",
+    "corrected_segments",
+    "error",
+}
 
 
 class TaskStore:
@@ -63,36 +105,22 @@ class TaskStore:
         return task
 
     async def update_task(
-        self,
-        task_id: str,
-        *,
-        status: TaskStatus | None = None,
-        progress: float | None = None,
-        message: str | None = None,
-        result_text: str | None = None,
-        segments: list[dict[str, Any]] | None = None,
-        error: str | None = None,
-        log: dict[str, Any] | None = None,
+        self, task_id: str, *, log: dict[str, Any] | None = None, **changes: Any
     ) -> TaskRecord | None:
+        """Apply field changes (None values are ignored) and broadcast; returns None if the task was deleted."""
+        unknown = set(changes) - _UPDATABLE
+        if unknown:
+            raise TypeError(f"unknown task fields: {sorted(unknown)}")
         async with self._lock:
             record = self._tasks.get(task_id)
             if record is None:
-                # Task was deleted, silently return None
                 return None
-            if status is not None:
-                record.status = status
-            if progress is not None:
-                record.progress = progress
-            if message is not None:
-                record.message = message
-            if result_text is not None:
-                record.result_text = result_text
-            if segments is not None:
-                record.segments = segments
-            if error is not None:
-                record.error = error
+            for key, value in changes.items():
+                if value is not None:
+                    setattr(record, key, value)
             if log is not None:
                 record.logs.append(log)
+                del record.logs[:-MAX_STORED_LOGS]
             record.updated_at = time.time()
         await self._broadcast(record)
         return record
@@ -123,6 +151,8 @@ class TaskStore:
         try:
             while True:
                 item = await queue.get()
+                if item is None:  # task deleted, close the stream
+                    break
                 yield item
         finally:
             async with self._lock:

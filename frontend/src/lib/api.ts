@@ -1,6 +1,7 @@
 // REST/WebSocket API helpers for EchoSmith frontend.
 import axios, { AxiosHeaders } from "axios";
 import { backendStatusStore } from "./backendStatus";
+import { getMessages } from "./i18n";
 
 export interface HealthStatus {
   ffmpeg: boolean;
@@ -11,23 +12,42 @@ export interface HealthStatus {
   download_progress?: number;
   download_message?: string;
   ytdlp?: boolean;
+  correction_model?: boolean;
+  correction_model_loaded?: boolean;
+  correction_model_path?: string;
+  asr_model?: string;
 }
 
 export type TaskStatus = "queued" | "running" | "paused" | "completed" | "failed" | "cancelled";
 
-export interface TaskSnapshot {
+export type TaskPhase = "queued" | "downloading" | "transcribing" | "correcting" | "done";
+
+/** Lightweight task state polled for the library (GET /tasks?summary=true). */
+export interface TaskSummary {
   id: string;
   status: TaskStatus;
   progress: number;
   message: string;
-  result_text?: string | null;
-  segments: Array<{ index: number; start_ms: number; end_ms: number; text: string }>;
+  phase: TaskPhase;
+  asr_progress: number;
+  correction_enabled: boolean;
+  correction_progress: number;
+  correction_failed_batches: number;
   source: Record<string, unknown>;
   error?: string | null;
-  logs: Array<{ timestamp: number; type: string; message: string; progress?: number }>;
   created_at: number;
   updated_at: number;
 }
+
+/** Live state of one task (websocket / GET /tasks/{id}); texts are absent until loaded. */
+export interface TaskSnapshot extends TaskSummary {
+  result_text?: string | null;
+  raw_text?: string | null;
+  logs?: Array<{ timestamp: number; type: string; message: string; progress?: number }>;
+}
+
+export type ExportFormat = "txt" | "srt" | "md";
+export const EXPORT_FORMATS: ExportFormat[] = ["txt", "srt", "md"];
 
 const baseURL = "/api";
 let backendToken: string | null = null;
@@ -171,6 +191,10 @@ export async function fetchHealth(): Promise<HealthStatus> {
     download_progress: data.download_progress ?? (data.model_downloading ? 0 : 1),
     download_message: data.download_message,
     ytdlp: data.ytdlp ?? false,
+    correction_model: data.correction_model ?? false,
+    correction_model_loaded: data.correction_model_loaded ?? false,
+    correction_model_path: data.correction_model_path,
+    asr_model: data.asr_model,
   };
 }
 
@@ -182,13 +206,94 @@ export async function triggerModelDownload(): Promise<{ status: ModelDownloadSta
   return response.data;
 }
 
-export async function listTasks(): Promise<TaskSnapshot[]> {
+/** The hotword list and how many of its words fit into the correction prompt. */
+export interface HotwordList {
+  words: string[];
+  in_prompt: number;
+}
+
+export async function fetchHotwords(): Promise<HotwordList> {
   await ensureBackendBase();
-  const response = await apiClient.get<TaskSnapshot[]>("/tasks");
+  const response = await apiClient.get<HotwordList>("/hotwords");
   return response.data;
 }
 
-export async function createTaskFromFile(file: File, language = "zh"): Promise<string> {
+export async function addHotword(word: string): Promise<HotwordList> {
+  await ensureBackendBase();
+  const response = await apiClient.post<HotwordList>("/hotwords", { word });
+  return response.data;
+}
+
+/** Replace the whole hotword list. */
+export async function importHotwords(words: string[]): Promise<HotwordList> {
+  await ensureBackendBase();
+  const response = await apiClient.post<HotwordList>("/hotwords/import", { words });
+  return response.data;
+}
+
+export async function removeHotword(word: string): Promise<HotwordList> {
+  await ensureBackendBase();
+  const response = await apiClient.delete<HotwordList>(`/hotwords/${encodeURIComponent(word)}`);
+  return response.data;
+}
+
+// Settings types
+export interface CorrectionConfig {
+  mode: "none" | "cloud_api";
+  api_provider: "doubao" | "openai" | "anthropic" | "deepseek" | "custom";
+  api_key: string;
+  api_key_set: boolean;
+  api_model: string;
+  api_base_url: string;
+}
+
+export interface TranscriptionConfig {
+  asr_model: ASRModelId;
+}
+
+export type ASRModelId = "sensevoice-sherpa-2024";
+
+export interface ApiUsageStats {
+  total_calls: number;
+  total_segments: number;
+  failed_calls: number;
+}
+
+export interface AppSettings {
+  transcription: TranscriptionConfig;
+  correction: CorrectionConfig;
+  api_usage: ApiUsageStats;
+}
+
+// Settings API
+export async function fetchSettings(): Promise<AppSettings> {
+  await ensureBackendBase();
+  const response = await apiClient.get<AppSettings>("/settings");
+  return response.data;
+}
+
+export async function updateSettings(settings: {
+  transcription?: Partial<TranscriptionConfig>;
+  correction?: Partial<CorrectionConfig>;
+}): Promise<AppSettings> {
+  await ensureBackendBase();
+  const response = await apiClient.post<AppSettings>("/settings", settings);
+  return response.data;
+}
+
+export async function resetApiUsage(): Promise<AppSettings> {
+  await ensureBackendBase();
+  const response = await apiClient.post<AppSettings>("/settings/reset-usage");
+  return response.data;
+}
+
+export async function listTaskSummaries(): Promise<TaskSummary[]> {
+  await ensureBackendBase();
+  const response = await apiClient.get<TaskSummary[]>("/tasks", { params: { summary: true } });
+  return response.data;
+}
+
+export async function createTaskFromFile(file: File, language = "auto"): Promise<string> {
   await ensureBackendBase();
   const form = new FormData();
   form.append("file", file);
@@ -199,13 +304,13 @@ export async function createTaskFromFile(file: File, language = "zh"): Promise<s
   return response.data.id;
 }
 
-export async function createTaskFromPath(path: string, language = "zh"): Promise<string> {
+export async function createTaskFromPath(path: string, language = "auto"): Promise<string> {
   await ensureBackendBase();
   const response = await apiClient.post<{ id: string }>("/tasks/local", { path, language });
   return response.data.id;
 }
 
-export async function createTaskFromUrl(url: string, language = "zh"): Promise<string> {
+export async function createTaskFromUrl(url: string, language = "auto"): Promise<string> {
   await ensureBackendBase();
   const response = await apiClient.post<{ id: string }>("/tasks/url", { url, language });
   return response.data.id;
@@ -221,9 +326,25 @@ export async function resumeTask(id: string): Promise<void> {
   await apiClient.post(`/tasks/${id}/resume`);
 }
 
+/** Stop a task; it stays in the library with its partial transcript. */
 export async function cancelTask(id: string): Promise<void> {
   await ensureBackendBase();
+  await apiClient.post(`/tasks/${id}/cancel`);
+}
+
+/** Stop (if running) and remove a task from the library. */
+export async function deleteTask(id: string): Promise<void> {
+  await ensureBackendBase();
   await apiClient.delete(`/tasks/${id}`);
+}
+
+/** Human-readable message from an API/network error (prefers the backend's `detail`). */
+export function errorMessage(error: unknown): string {
+  if (axios.isAxiosError(error)) {
+    const detail = (error.response?.data as { detail?: unknown } | undefined)?.detail;
+    if (typeof detail === "string" && detail) return detail;
+  }
+  return error instanceof Error ? error.message : String(error);
 }
 
 export interface DownloadProgress {
@@ -266,12 +387,12 @@ export async function downloadMedia(
   });
 
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `下载失败 (${res.status})`);
+    const detail = await res.json().then((body: { detail?: string }) => body.detail, () => undefined);
+    throw new Error(detail || `${getMessages().downloadFailed} (${res.status})`);
   }
 
   const reader = res.body?.getReader();
-  if (!reader) throw new Error("无法读取下载流");
+  if (!reader) throw new Error(getMessages().downloadFailed);
 
   const decoder = new TextDecoder();
   let buffer = "";
@@ -310,16 +431,13 @@ export async function downloadMedia(
     }
   }
 
-  if (!result) throw new Error("下载完成但未收到结果");
+  if (!result) throw new Error(getMessages().downloadFailed);
   return result;
 }
 
-export async function exportTask(id: string, format: "txt" | "srt" | "json"): Promise<Blob> {
+export async function exportTask(id: string, format: ExportFormat): Promise<Blob> {
   await ensureBackendBase();
-  const response = await apiClient.get(`/tasks/${id}/export`, {
-    params: { format },
-    responseType: format === "json" ? "blob" : "blob"
-  });
+  const response = await apiClient.get(`/tasks/${id}/export`, { params: { format }, responseType: "blob" });
   return response.data;
 }
 
@@ -338,58 +456,39 @@ export function connectTaskStream(taskId: string): WebSocket {
   return new WebSocket(url);
 }
 
-/**
- * Auto-export completed task to the source file directory
- * NOTE: This function requires fs:scope permissions in Tauri capabilities
- */
-export async function autoExportTask(
-  taskId: string,
-  formats: Array<"txt" | "srt" | "json">,
-  sourceFilePath: string
-): Promise<void> {
-  console.log("[autoExportTask] Starting auto-export", { taskId, formats, sourceFilePath });
-
-  try {
-    const { writeFile } = await import("@tauri-apps/plugin-fs");
-    const { dirname, extname, basename, join } = await import("@tauri-apps/api/path");
-    console.log("[autoExportTask] Tauri plugins imported successfully");
-
-    // Get source file directory and base name
-    const sourceDir = await dirname(sourceFilePath);
-    const sourceExt = await extname(sourceFilePath);
-    const sourceBase = await basename(sourceFilePath, sourceExt);
-    console.log("[autoExportTask] Parsed file paths", { sourceDir, sourceExt, sourceBase });
-
-    // Export each format
-    for (const format of formats) {
-      try {
-        console.log(`[autoExportTask] Exporting ${format} for task ${taskId}`);
-        const blob = await exportTask(taskId, format);
-        const arrayBuffer = await blob.arrayBuffer();
-        const uint8Array = new Uint8Array(arrayBuffer);
-
-        // Clean up format string (remove leading dots if any)
-        const cleanFormat = format.startsWith('.') ? format.slice(1) : format;
-        // Clean up base name (remove trailing dots if any)
-        const cleanBase = sourceBase.replace(/\.+$/, '');
-
-        const outputPath = await join(sourceDir, `${cleanBase}.${cleanFormat}`);
-        console.log(`[autoExportTask] Writing to ${outputPath}`, {
-          sourceDir,
-          cleanBase,
-          cleanFormat,
-          fullPath: outputPath
-        });
-        await writeFile(outputPath, uint8Array);
-        console.log(`[autoExportTask] Successfully wrote ${format} file to ${outputPath}`);
-      } catch (error) {
-        console.error(`[autoExportTask] Failed to export ${format} for task ${taskId}:`, error);
-        throw error;
-      }
-    }
-    console.log("[autoExportTask] All exports completed successfully");
-  } catch (error) {
-    console.error("[autoExportTask] Auto-export failed:", error);
-    throw error;
+/** Write each format as "<dir>/<base>.<format>" (desktop only); returns the written paths. */
+export async function saveTaskFiles(taskId: string, formats: ExportFormat[], dir: string, base: string): Promise<string[]> {
+  const { writeFile } = await import("@tauri-apps/plugin-fs");
+  const { join } = await import("@tauri-apps/api/path");
+  const written: string[] = [];
+  for (const format of formats) {
+    const blob = await exportTask(taskId, format);
+    const path = await join(dir, `${base}.${format}`);
+    await writeFile(path, new Uint8Array(await blob.arrayBuffer()));
+    written.push(path);
   }
+  return written;
+}
+
+export const isTauri = (): boolean => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+/** Ask where to save (desktop) or trigger a browser download; returns false if the user cancelled. */
+export async function saveExport(blob: Blob, fileName: string): Promise<boolean> {
+  if (isTauri()) {
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const { writeFile } = await import("@tauri-apps/plugin-fs");
+    const path = await save({ defaultPath: fileName });
+    if (!path) return false;
+    await writeFile(path, new Uint8Array(await blob.arrayBuffer()));
+    return true;
+  }
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = fileName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000); // revoking synchronously can cancel the download
+  return true;
 }

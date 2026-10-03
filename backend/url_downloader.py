@@ -53,7 +53,33 @@ _DOUYIN_RE = re.compile(
     r"https?://(?:v\.douyin\.com|www\.douyin\.com|www\.iesdouyin\.com)/", re.IGNORECASE
 )
 
+_BILIBILI_RE = re.compile(
+    r"https?://(?:www\.)?(?:bilibili\.com|b23\.tv)/", re.IGNORECASE
+)
+
 _URL_RE = re.compile(r"https?://[^\s<>\"']+")
+
+_DESKTOP_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
+
+
+def _safe_ytdlp_opts(url: str) -> dict:
+    """Options shared by yt-dlp calls that hit remote video pages."""
+    opts: dict = {
+        "socket_timeout": 15,
+        "retries": 3,
+        "fragment_retries": 3,
+        "extractor_retries": 2,
+    }
+    if _BILIBILI_RE.search(url):
+        opts["http_headers"] = {
+            "User-Agent": _DESKTOP_UA,
+            "Referer": "https://www.bilibili.com/",
+        }
+    return opts
 
 
 def extract_url_from_text(text: str) -> str:
@@ -69,7 +95,13 @@ def extract_video_title(url: str) -> str:
             return _douyin_extract_title(url)
         except Exception:
             return ""
-    opts: dict = {"quiet": True, "no_warnings": True, "skip_download": True}
+    opts: dict = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "noplaylist": True,
+        **_safe_ytdlp_opts(url),
+    }
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -126,6 +158,7 @@ def download_audio(
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
+        **_safe_ytdlp_opts(url),
     }
 
     # --- Attempt 1: plain (no cookies) ---
@@ -403,6 +436,7 @@ def _ytdlp_download_media(
         "no_warnings": True,
         "noplaylist": True,
         "progress_hooks": [_hook],
+        **_safe_ytdlp_opts(url),
     }
 
     if mode == "audio":

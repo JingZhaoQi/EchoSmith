@@ -1,13 +1,5 @@
 // Shared constants and utility functions.
-
-export const STATUS_LABELS: Record<string, string> = {
-  queued: "排队中",
-  running: "进行中",
-  paused: "暂停中",
-  completed: "已完成",
-  failed: "失败",
-  cancelled: "已清空"
-};
+import type { TaskSummary } from "./api";
 
 export function getSourceLabel(source?: Record<string, unknown>, maxLen = 50): string {
   if (!source) return "";
@@ -25,4 +17,12 @@ export function getSourceLabel(source?: Record<string, unknown>, maxLen = 50): s
     return truncate(url);
   }
   return "";
+}
+
+/** File name for exports: source name without its extension; video titles are kept whole. */
+export function exportBaseName(task: TaskSummary): string {
+  const name = String(task.source.name ?? task.id);
+  if (task.source.type === "url") return name.replace(/[\\/:*?"<>|]+/g, " ").trim() || task.id;
+  const file = name.split(/[\\/]/).pop() ?? name;
+  return file.includes(".") ? file.replace(/\.[^.]+$/, "") : file;
 }

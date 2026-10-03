@@ -9,44 +9,75 @@ import {
   Music2Icon,
   CheckCircle2Icon,
   DownloadIcon,
+  BadgeCheckIcon,
 } from "lucide-react";
 
+import { TaskRow } from "./TaskRow";
 import { Button } from "./ui/button";
-import { createTaskFromUrl, downloadMedia } from "../lib/api";
+import { createTaskFromUrl, deleteTask, downloadMedia, errorMessage } from "../lib/api";
+import { getSourceLabel } from "../lib/constants";
 import { useTasksStore } from "../hooks/useTasksStore";
+import { localizeBackendMessage, useLocaleStore, useT, type Messages } from "../lib/i18n";
 
 function extractUrl(text: string): string {
   const m = text.match(/https?:\/\/[^\s<>"']+/);
   return m ? m[0].replace(/[,.;:!?。，；：！？]+$/, "") : text.trim();
 }
 
+function detectPlatform(text: string, t: Messages): { name: string; hint: string } {
+  const value = text.toLowerCase();
+  if (!value.trim()) return { name: t.platformWaiting, hint: t.platformWaitingHint };
+  if (value.includes("bilibili.com") || value.includes("b23.tv")) {
+    return { name: "Bilibili", hint: t.platformBilibiliHint };
+  }
+  if (value.includes("youtube.com") || value.includes("youtu.be")) {
+    return { name: "YouTube", hint: t.platformYoutubeHint };
+  }
+  if (value.includes("douyin.com") || value.includes("iesdouyin.com")) {
+    return { name: t.platformDouyin, hint: t.platformDouyinHint };
+  }
+  if (value.includes("x.com") || value.includes("twitter.com")) {
+    return { name: "Twitter/X", hint: t.platformXHint };
+  }
+  return { name: t.platformGeneric, hint: t.platformGenericHint };
+}
+
 export function UrlTaskComposer(): JSX.Element {
   const [url, setUrl] = useState("");
   const [dlProgress, setDlProgress] = useState<{ ratio: number; message: string } | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const t = useT();
+  const locale = useLocaleStore((state) => state.locale);
 
   const upsertTask = useTasksStore((state) => state.upsertTask);
-  const setActiveTask = useTasksStore((state) => state.setActiveTask);
+  const selectTask = useTasksStore((state) => state.selectTask);
+  const removeTask = useTasksStore((state) => state.removeTask);
+  const allTasks = useTasksStore((state) => state.tasks);
+  const urlTasks = Object.values(allTasks)
+    .filter((task) => task.source.type === "url")
+    .sort((a, b) => b.created_at - a.created_at);
 
   const mutation = useMutation({
     mutationFn: async (videoUrl: string) => {
       const taskId = await createTaskFromUrl(videoUrl);
 
+      const now = Date.now() / 1000;
       upsertTask({
         id: taskId,
         status: "queued",
         progress: 0,
-        message: "排队中",
-        result_text: "",
-        segments: [],
+        message: "",
+        phase: "queued",
+        asr_progress: 0,
+        correction_enabled: false,
+        correction_progress: 0,
+        correction_failed_batches: 0,
         source: { type: "url", url: videoUrl, name: videoUrl },
-        error: null,
-        logs: [],
-        created_at: Date.now() / 1000,
-        updated_at: Date.now() / 1000,
+        created_at: now,
+        updated_at: now,
       });
 
-      setActiveTask(taskId);
+      selectTask(taskId);
       return taskId;
     },
     onSuccess: () => {
@@ -63,14 +94,14 @@ export function UrlTaskComposer(): JSX.Element {
     mutationFn: async ({ rawUrl, mode }: { rawUrl: string; mode: "video" | "audio" }) => {
       const { downloadDir } = await import("@tauri-apps/api/path");
       const saveDir = await downloadDir();
-      setDlProgress({ ratio: 0, message: "准备下载…" });
+      setDlProgress({ ratio: 0, message: t.preparingDownload });
       return downloadMedia(rawUrl, saveDir, mode, (ratio, message) => {
         setDlProgress({ ratio, message });
       });
     },
     onSuccess: (data) => {
       setDlProgress(null);
-      showToast(`已保存到 Downloads 目录：${data.filename}`);
+      showToast(t.savedToDownloads(data.filename));
     },
     onError: () => {
       setDlProgress(null);
@@ -101,41 +132,44 @@ export function UrlTaskComposer(): JSX.Element {
 
   const canStart = url.trim().length > 0 && !mutation.isPending;
   const canDownload = url.trim().length > 0 && !dlMutation.isPending;
+  const platform = detectPlatform(url, t);
 
   return (
     <form
-      className="rounded-[20px] border border-black/[0.08] dark:border-white/[0.08] bg-white/90 dark:bg-zinc-900/90 backdrop-blur-2xl backdrop-saturate-150 shadow-[0_1px_2px_rgba(0,0,0,0.05),0_8px_16px_rgba(0,0,0,0.08)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.3),0_8px_24px_rgba(0,0,0,0.4)] hover:shadow-[0_1px_2px_rgba(0,0,0,0.05),0_12px_24px_rgba(0,0,0,0.12)] dark:hover:shadow-[0_1px_2px_rgba(0,0,0,0.3),0_12px_32px_rgba(0,0,0,0.5)] transition-all duration-300 ease-out p-6 flex flex-col gap-5 h-full min-h-[420px]"
+      className="liquid-panel flex h-full min-h-0 flex-col gap-5 overflow-y-auto p-6"
       onSubmit={handleSubmit}
     >
       <div>
-        <h2 className="text-base font-semibold">在线视频转写</h2>
-        <p className="text-xs text-muted-foreground mt-1">
-          粘贴视频链接，自动下载音频并转写为文字
+        <h2 className="text-base font-semibold text-slate-950 dark:text-white">{t.urlTitle}</h2>
+        <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+          {t.urlSubtitle}
         </p>
       </div>
 
       {/* URL input */}
       <div className="flex flex-col gap-4">
         <div>
-          <label className="text-sm font-medium text-gray-900 dark:text-white mb-2 block">
-            视频链接
+          <label htmlFor="video-url" className="mb-2 block text-sm font-medium text-slate-900 dark:text-white">
+            {t.videoLink}
           </label>
           <div className="flex gap-2">
             <div className="relative flex-1">
               <LinkIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
               <input
+                id="video-url"
                 type="text"
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
-                placeholder="粘贴视频链接或分享文本…"
-                className="w-full pl-9 pr-3 py-2.5 rounded-xl border border-black/[0.08] dark:border-white/[0.08] bg-white/60 dark:bg-zinc-800/60 text-sm placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500/50 transition-all"
+                placeholder={t.urlPlaceholder}
+                className="glass-field w-full rounded-2xl py-2.5 pl-9 pr-3 text-sm placeholder:text-slate-400 transition-all focus:outline-none focus:ring-2 focus:ring-sky-500/30 dark:placeholder:text-slate-500"
               />
             </div>
             <button
               type="button"
               onClick={handlePaste}
-              className="px-3 py-2.5 rounded-xl border border-black/[0.08] dark:border-white/[0.08] bg-black/[0.04] dark:bg-white/[0.06] hover:bg-black/[0.08] dark:hover:bg-white/[0.12] transition-colors text-gray-600 dark:text-gray-300"
-              title="从剪贴板粘贴"
+              className="glass-field rounded-2xl px-3 py-2.5 text-slate-600 transition-colors hover:bg-white/70 dark:text-slate-300 dark:hover:bg-white/[0.10]"
+              title={t.pasteFromClipboard}
+              aria-label={t.pasteFromClipboard}
             >
               <ClipboardPasteIcon className="h-4 w-4" />
             </button>
@@ -143,29 +177,39 @@ export function UrlTaskComposer(): JSX.Element {
         </div>
 
         {/* Supported platforms hint */}
-        <div className="rounded-xl border border-black/[0.04] dark:border-white/[0.04] bg-black/[0.02] dark:bg-white/[0.02] px-4 py-3">
-          <p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed">
-            支持 YouTube、Bilibili、Twitter/X、抖音等 1000+ 平台。粘贴视频页面链接即可，应用会自动下载音频并转写。
-          </p>
+        <div className="glass-field rounded-2xl px-4 py-3">
+          <div className="flex items-start gap-3">
+            <span className="mt-0.5 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-xl bg-emerald-500/12 text-emerald-700 dark:text-emerald-300">
+              <BadgeCheckIcon className="h-4 w-4" />
+            </span>
+            <div className="min-w-0">
+              <div className="text-xs font-semibold text-slate-800 dark:text-slate-100">
+                {platform.name}
+              </div>
+              <p className="mt-0.5 text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+                {platform.hint}
+              </p>
+            </div>
+          </div>
         </div>
 
         {/* Progress hints */}
         {mutation.isPending && (
-          <div className="flex items-center gap-2 px-4 py-3 rounded-xl bg-indigo-500/5 dark:bg-indigo-400/5 border border-indigo-500/10 dark:border-indigo-400/10">
-            <div className="h-4 w-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin flex-shrink-0" />
-            <p className="text-xs text-indigo-700 dark:text-indigo-300">
-              正在创建任务，请在右侧面板查看进度…
+          <div className="flex items-center gap-2 rounded-2xl border border-sky-500/10 bg-sky-500/5 px-4 py-3 dark:bg-sky-400/5">
+            <div className="h-4 w-4 flex-shrink-0 animate-spin rounded-full border-2 border-sky-500 border-t-transparent" />
+            <p className="text-xs text-sky-700 dark:text-sky-300">
+              {t.creatingTaskHint}
             </p>
           </div>
         )}
 
         {/* Download progress bar */}
         {dlMutation.isPending && dlProgress && (
-          <div className="px-4 py-3 rounded-xl bg-emerald-500/5 dark:bg-emerald-400/5 border border-emerald-500/10 dark:border-emerald-400/10">
+          <div className="rounded-2xl border border-emerald-500/10 bg-emerald-500/5 px-4 py-3 dark:bg-emerald-400/5">
             <div className="flex items-center gap-2 mb-2">
               <DownloadIcon className="h-4 w-4 text-emerald-600 dark:text-emerald-400 flex-shrink-0" />
               <p className="text-xs text-emerald-700 dark:text-emerald-300 flex-1">
-                {dlProgress.message}
+                {localizeBackendMessage(dlProgress.message, locale)}
               </p>
             </div>
             <div className="h-1.5 rounded-full bg-emerald-200/60 dark:bg-emerald-900/40 overflow-hidden">
@@ -187,7 +231,7 @@ export function UrlTaskComposer(): JSX.Element {
           disabled={!canStart}
         >
           <PlayIcon className="h-4 w-4" />
-          {mutation.isPending ? "创建中…" : "开始转写"}
+          {mutation.isPending ? t.creating : t.startTranscription}
         </Button>
 
         {/* Download buttons */}
@@ -200,7 +244,7 @@ export function UrlTaskComposer(): JSX.Element {
             onClick={() => handleDownload("video")}
           >
             <VideoIcon className="h-4 w-4" />
-            下载视频
+            {t.downloadVideo}
           </Button>
           <Button
             type="button"
@@ -210,20 +254,35 @@ export function UrlTaskComposer(): JSX.Element {
             onClick={() => handleDownload("audio")}
           >
             <Music2Icon className="h-4 w-4" />
-            下载音频
+            {t.downloadAudio}
           </Button>
         </div>
       </div>
 
       {mutation.isError && (
         <p className="text-xs text-red-600 dark:text-red-400">
-          {(mutation.error as Error).message || "创建任务失败"}
+          {errorMessage(mutation.error) || t.createTaskFailed}
         </p>
       )}
       {dlMutation.isError && (
         <p className="text-xs text-red-600 dark:text-red-400">
-          {(dlMutation.error as Error).message || "下载失败"}
+          {errorMessage(dlMutation.error) || t.downloadFailed}
         </p>
+      )}
+
+      {urlTasks.length > 0 && (
+        <ul className="space-y-2">
+          {urlTasks.map((task) => (
+            <TaskRow
+              key={task.id}
+              name={getSourceLabel(task.source, 60) || task.id.slice(0, 8)}
+              task={task}
+              error={task.status === "failed" ? (task.error ?? undefined) : undefined}
+              isUrl
+              onRemove={() => void deleteTask(task.id).catch(() => undefined).then(() => removeTask(task.id))}
+            />
+          ))}
+        </ul>
       )}
 
       {/* Toast notification */}

@@ -1,6 +1,6 @@
 [tool.isort]
 profile = "black"
-known_first_party = ["asr_engine", "task_store", "app", "url_downloader"]
+known_first_party = ["app", "asr_engine", "asr_models", "correction_engine", "exporters", "hotwords", "settings", "task_progress", "task_store", "timing", "transcript_enhancer", "transcription_metrics", "url_downloader"]
 line_length = 88
 
 [tool.black]
@@ -13,3 +13,10 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]
 ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app", "asr_engine", "asr_models", "correction_engine", "exporters", "hotwords", "settings", "task_progress", "task_store", "timing", "transcript_enhancer", "transcription_metrics", "url_downloader"]
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+asyncio_mode = "auto"

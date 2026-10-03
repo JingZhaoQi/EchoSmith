@@ -7,39 +7,86 @@ import os
 import platform
 import re
 import subprocess
-import wave
-from dataclasses import dataclass
+import threading
+import time
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from contextlib import closing
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterable, Iterator
 
 import numpy as np
 import sherpa_onnx
+
+try:
+    from asr_models import DEFAULT_ASR_MODEL_ID, sanitize_model_id
+    from timing import (
+        Cue,
+        TimedText,
+        align_corrected,
+        concat,
+        cut_cues,
+        join_text,
+        timed_from_tokens,
+    )
+    from transcript_enhancer import enhance_text
+except ImportError:
+    from .asr_models import DEFAULT_ASR_MODEL_ID, sanitize_model_id
+    from .timing import (
+        Cue,
+        TimedText,
+        align_corrected,
+        concat,
+        cut_cues,
+        join_text,
+        timed_from_tokens,
+    )
+    from .transcript_enhancer import enhance_text
+
+
+def _no_window_kwargs() -> dict:
+    """On Windows GUI apps (Tauri, CREATE_NO_WINDOW) child processes must not allocate a console."""
+    if platform.system() == "Windows":
+        return {"creationflags": subprocess.CREATE_NO_WINDOW}  # 0x08000000
+    return {}
 
 
 def _subprocess_kwargs() -> dict:
     """Return extra kwargs for subprocess.run() to work reliably on Windows.
 
-    On Windows GUI apps (e.g. launched via Tauri with CREATE_NO_WINDOW),
-    child processes need:
-      - CREATE_NO_WINDOW to avoid console window flash / allocation failure
-      - stdin=DEVNULL because ffmpeg reads stdin by default and a missing
-        console makes stdin unavailable, causing hangs
-      - explicit encoding='utf-8' with errors='replace' because the default
-        text=True uses the system code page (cp936 on Chinese Windows) which
-        can choke on ffmpeg's UTF-8 output
+    - stdin=DEVNULL because ffmpeg reads stdin by default and a missing
+      console makes stdin unavailable, causing hangs
+    - explicit encoding='utf-8' with errors='replace' because the default
+      text=True uses the system code page (cp936 on Chinese Windows) which
+      can choke on ffmpeg's UTF-8 output
     """
-    kwargs: dict = {
+    return {
         "stdin": subprocess.DEVNULL,
         "capture_output": True,
         "encoding": "utf-8",
         "errors": "replace",
+        **_no_window_kwargs(),
     }
-    if platform.system() == "Windows":
-        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW  # 0x08000000
-    return kwargs
 
 
-MODEL_CARD = "SenseVoice INT8 (sherpa-onnx)"
+# ffmpeg audio cleanup applied before recognition.
+# loudnorm was dropped: it internally resamples to 192kHz and took ~90s on a
+# 76-minute file. Instead we measure integrated loudness with ebur128 (fast)
+# and apply a static gain + true-peak limiter, which lands within ~0.5 LU of
+# the loudnorm output while running ~9x faster.
+LOUDNESS_TARGET_LUFS = -16.0
+TRUE_PEAK_LIMIT = 0.841  # -1.5 dBTP
+MAX_LOUDNESS_GAIN_DB = 24.0  # avoid amplifying noise floor on very quiet audio
+# Loudness is measured on the opening minutes only: a full-file pass cost ~6 s per hour of
+# audio before any text appeared, and speech recordings keep a steady level.
+LOUDNESS_PROBE_S = 180
+SAMPLE_RATE = 16000
+READ_CHUNK_S = 1
+AUDIO_FILTER = (
+    "highpass=f=80,lowpass=f=7800,"
+    "volume={gain}dB,"
+    f"alimiter=limit={TRUE_PEAK_LIMIT}:level=false"
+)
 
 # Default model directory (platform-aware, matches download_models.py)
 if platform.system() == "Windows":
@@ -70,34 +117,221 @@ class Segment:
 
 @dataclass
 class TranscriptionResult:
-    text: str
-    segments: list[Segment]
+    text: str  # final text: corrected when correction ran, else the raw transcript
+    segments: list[Segment]  # raw transcript cues with real timestamps
     duration_ms: int
+    raw_text: str = ""
+    corrected_segments: list[Segment] = field(
+        default_factory=list
+    )  # corrected text re-timed onto the audio
+    correction_failed_batches: int = 0
+    cancelled: bool = False
+
+
+ProgressCallback = Callable[
+    [float, str, str], None
+]  # (asr_progress 0..1, stage, raw text so far)
+CorrectionCallback = Callable[
+    [str, float], None
+]  # (corrected text so far, correction progress 0..1)
+
+FIRST_CHUNK_CHARS = (
+    200  # small first batch: corrected text starts appearing within seconds
+)
+CORRECTION_CHUNK_CHARS = 800
+MAX_PARALLEL_CORRECTIONS = 6
+CORRECTION_CONTEXT_CHARS = 500
+EMIT_INTERVAL_S = 0.1  # throttle for streamed correction updates
+
+# Silero VAD trims speech tightly; decoding a slightly wider window keeps the last syllable
+# (measured: "什么样的爱" lost its final character without the tail pad).
+VAD_PAD_BEFORE_S = 0.15
+VAD_PAD_AFTER_S = 0.35
+FIXED_CHUNK_S = 30
+VAD_MAX_SPEECH_S = 30  # longer speech is force-split with no gap to the next region
+
+
+def segments_from_cues(cues: list[Cue], first_index: int = 0) -> list[Segment]:
+    """Display segments: cleaned cue text, empty cues dropped, indexes continuous."""
+    out: list[Segment] = []
+    for cue in cues:
+        text = enhance_text(cue.text)
+        if text:
+            out.append(Segment(first_index + len(out), cue.start_ms, cue.end_ms, text))
+    return out
 
 
 @dataclass
-class SpeechRegion:
-    """Copied speech data from VAD (safe after vad.pop())."""
-
-    start_sample: int
-    samples: np.ndarray  # float32 numpy array (NOT Python list)
-
-
-ProgressCallback = Callable[[float, str, str], None]
-
-SENTENCE_PATTERN = re.compile(
-    r"[^。！？!?…\n]+[。！？!?…]+|[^。！？!?…\n]+", re.UNICODE
-)
+class CorrectedBatch:
+    segments: list[Segment]  # raw display segments of this batch
+    timed: TimedText  # raw text with per-character times
+    text: str  # corrected text (raw text when the batch failed)
+    failed: bool
 
 
-def _split_sentences(text: str) -> list[str]:
-    """Split text into sentences while keeping ending punctuation."""
-    if not text:
-        return []
-    sentences = [
-        segment.strip() for segment in SENTENCE_PATTERN.findall(text) if segment.strip()
-    ]
-    return sentences
+@dataclass
+class _Batch:
+    segments: list[Segment]
+    timed: TimedText
+    raw: str
+    partial: str = ""
+    result: str | None = None
+    failed: bool = False
+
+
+class StreamingCorrector:
+    """Overlap LLM correction with transcription and stream the corrected text.
+
+    Segments accumulate into batches (small first batch, then CORRECTION_CHUNK_CHARS)
+    that are corrected concurrently while transcription continues. The visible text is
+    every finished batch in order plus the streamed part of the first unfinished one,
+    so it only ever grows. Failed batches fall back to their raw text.
+    """
+
+    def __init__(
+        self,
+        correction_engine,  # CorrectionEngine-compatible: correct(texts, preceding_text, on_delta, should_stop)
+        first_chunk_chars: int = FIRST_CHUNK_CHARS,
+        chunk_chars: int = CORRECTION_CHUNK_CHARS,
+        max_workers: int = MAX_PARALLEL_CORRECTIONS,
+        on_update: CorrectionCallback | None = None,
+        emit_interval: float = EMIT_INTERVAL_S,
+    ) -> None:
+        self._engine = correction_engine
+        self._first_chunk_chars = first_chunk_chars
+        self._chunk_chars = chunk_chars
+        self._pool = ThreadPoolExecutor(max_workers=max_workers)
+        self._on_update = on_update
+        self._emit_interval = emit_interval
+        self._batches: list[_Batch] = []
+        self._futures: list[Future] = []
+        self._buffer: list[Segment] = []
+        self._buffer_timed = TimedText("", [], 0)
+        self._context = ""
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._last_emit = 0.0
+
+    def add(self, segments: list[Segment], timed: TimedText) -> None:
+        """Feed newly transcribed segments (and their timed raw text); submits a batch once full."""
+        if not segments:
+            return
+        with self._lock:
+            self._buffer.extend(segments)
+            self._buffer_timed = concat(self._buffer_timed, timed)
+            limit = self._chunk_chars if self._batches else self._first_chunk_chars
+            if len(self._buffer_timed.text) >= limit:
+                self._submit_buffer_locked()
+
+    def _submit_buffer_locked(self) -> None:
+        if not self._buffer:
+            return
+        raw = ""
+        for seg in self._buffer:
+            raw = join_text(raw, seg.text)
+        batch = _Batch(self._buffer, self._buffer_timed, raw)
+        self._buffer, self._buffer_timed = [], TimedText("", [], 0)
+        self._batches.append(batch)
+        context = self._context
+        self._context = join_text(self._context, raw)[-CORRECTION_CONTEXT_CHARS:]
+        self._futures.append(self._pool.submit(self._correct_batch, batch, context))
+
+    def _correct_batch(self, batch: _Batch, context: str) -> None:
+        def on_delta(text: str) -> None:
+            with self._lock:
+                batch.partial = text
+                self._emit_locked(force=False)
+
+        try:
+            corrected = self._engine.correct(
+                [seg.text for seg in batch.segments],
+                preceding_text=context,
+                on_delta=on_delta,
+                should_stop=self._stop.is_set,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[CORRECTION] 批次异常: {exc}", flush=True)
+            corrected = ""
+        with self._lock:
+            batch.failed = not corrected.strip()
+            batch.result = batch.raw if batch.failed else corrected.strip()
+            self._emit_locked(force=True)
+
+    def _visible_locked(self) -> tuple[str, float]:
+        text, covered = "", 0.0
+        for batch in self._batches:
+            if batch.result is not None:
+                text = join_text(text, batch.result)
+                covered += len(batch.raw)
+                continue
+            text = join_text(text, batch.partial)
+            covered += min(len(batch.partial), len(batch.raw))
+            break
+        total = sum(len(b.raw) for b in self._batches) + len(self._buffer_timed.text)
+        return text, (covered / total if total else 0.0)
+
+    def _emit_locked(self, force: bool) -> None:
+        if self._on_update is None or self._stop.is_set():
+            return
+        now = time.monotonic()
+        if not force and now - self._last_emit < self._emit_interval:
+            return
+        self._last_emit = now
+        self._on_update(*self._visible_locked())
+
+    def finish(
+        self, cancelled_checker: Callable[[], bool] | None = None
+    ) -> list[CorrectedBatch] | None:
+        """Flush the buffer and wait for all batches; returns None as soon as cancelled_checker() is true."""
+        with self._lock:
+            self._submit_buffer_locked()
+        pending = set(self._futures)
+        while pending:
+            if cancelled_checker and cancelled_checker():
+                self.cancel()
+                return None
+            _done, pending = wait(pending, timeout=0.2, return_when=FIRST_COMPLETED)
+        self._pool.shutdown(wait=True)
+        return [
+            CorrectedBatch(b.segments, b.timed, b.result or b.raw, b.failed)
+            for b in self._batches
+        ]
+
+    def cancel(self) -> None:
+        """Stop in-flight streams and drop batches that have not started."""
+        self._stop.set()
+        self._pool.shutdown(wait=False, cancel_futures=True)
+
+
+class _StreamingVad:
+    """Silero VAD fed incrementally; returns finished speech regions as (start, end) sample indexes."""
+
+    def __init__(self, config: sherpa_onnx.VadModelConfig) -> None:
+        self._vad = sherpa_onnx.VoiceActivityDetector(
+            config, buffer_size_in_seconds=600
+        )
+        self._window = config.silero_vad.window_size
+        self._rest = np.zeros(0, dtype=np.float32)
+
+    def accept(self, chunk: np.ndarray) -> list[tuple[int, int]]:
+        data = np.concatenate([self._rest, chunk])
+        usable = len(data) // self._window * self._window
+        for i in range(0, usable, self._window):
+            self._vad.accept_waveform(data[i : i + self._window])
+        self._rest = data[usable:]
+        return self._drain()
+
+    def flush(self) -> list[tuple[int, int]]:
+        self._vad.flush()
+        return self._drain()
+
+    def _drain(self) -> list[tuple[int, int]]:
+        regions: list[tuple[int, int]] = []
+        while not self._vad.empty():
+            seg = self._vad.front  # C++ reference, invalid after pop(): copy first
+            regions.append((int(seg.start), int(seg.start) + len(seg.samples)))
+            self._vad.pop()
+        return regions
 
 
 class ASREngine:
@@ -130,27 +364,36 @@ class ASREngine:
         # for ONNX int8 inference and more threads just add overhead.
         return min(physical, 8)
 
-    SUPPORTED_LANGUAGES = {"zh", "en"}
-
     def __init__(
         self,
         model_dir: str = DEFAULT_MODEL_DIR,
-        download_callback: ModelDownloadCallback | None = None,
         num_threads: int = 0,
         use_int8: bool = True,
-        language: str = "zh",
+        correction_engine=None,  # CorrectionEngine | None
+        asr_model: str = DEFAULT_ASR_MODEL_ID,
     ) -> None:
         self._recognizer: sherpa_onnx.OfflineRecognizer | None = None
         self._vad_config: sherpa_onnx.VadModelConfig | None = None
         self._model_lock = asyncio.Lock()
         self._model_dir = model_dir
-        self._download_callback = download_callback
         self._model_downloading = False
         self._download_progress = 0.0
         self._download_message = ""
         self._num_threads = num_threads or self._default_num_threads()
         self._use_int8 = use_int8
-        self._language = language if language in self.SUPPORTED_LANGUAGES else "zh"
+        self._correction_engine = correction_engine
+        self._asr_model = DEFAULT_ASR_MODEL_ID
+        self.set_transcription_options(asr_model)
+
+    @property
+    def asr_model(self) -> str:
+        return self._asr_model
+
+    def set_transcription_options(
+        self,
+        asr_model: str = DEFAULT_ASR_MODEL_ID,
+    ) -> None:
+        self._asr_model = sanitize_model_id(asr_model)
 
     def get_model_cache_dir(self) -> str:
         """Get the directory where models will be cached."""
@@ -173,33 +416,27 @@ class ASREngine:
         """Return whether the model has been loaded."""
         return self._recognizer is not None
 
-    async def set_language(self, language: str) -> None:
-        """Switch recognition language, reloading model if needed."""
-        lang = language if language in self.SUPPORTED_LANGUAGES else "zh"
-        if lang == self._language:
-            return
-        async with self._model_lock:
-            self._language = lang
-            if self._recognizer is not None:
-                self._recognizer = None
-                self._load_model_sync()
-
     def _report_download_progress(
-        self, stage: str, progress: float, message: str
+        self,
+        stage: str,
+        progress: float,
+        message: str,
+        on_progress: ModelDownloadCallback | None,
     ) -> None:
-        """Record and forward model download progress."""
+        """Record and forward model loading progress."""
         self._download_progress = progress
         self._download_message = message
-
-        if self._download_callback:
-            self._download_callback(stage, progress, message)
+        if on_progress:
+            on_progress(stage, progress, message)
 
     def get_download_progress(self) -> tuple[float, str]:
         """Return current download progress and message."""
         return self._download_progress, self._download_message
 
-    async def ensure_model(self) -> None:
-        """Load sherpa-onnx SenseVoice model."""
+    async def ensure_model(
+        self, on_progress: ModelDownloadCallback | None = None
+    ) -> None:
+        """Load the sherpa-onnx model; on_progress reports loading to the calling task only."""
         async with self._model_lock:
             if self._recognizer is not None:
                 self._download_progress = 1.0
@@ -214,11 +451,12 @@ class ASREngine:
                     "初始化",
                     0.0,
                     f"正在加载模型...\n目录: {cache_dir}",
+                    on_progress,
                 )
 
                 await asyncio.to_thread(self._load_model_sync)
 
-                self._report_download_progress("完成", 1.0, "模型加载完成")
+                self._report_download_progress("完成", 1.0, "模型加载完成", on_progress)
             finally:
                 if self._recognizer is not None:
                     self._download_progress = 1.0
@@ -226,7 +464,7 @@ class ASREngine:
                 self._model_downloading = False
 
     def _load_model_sync(self) -> None:
-        """Synchronously load the sherpa-onnx recognizer."""
+        """Synchronously load the sherpa-onnx SenseVoice recognizer."""
         model_dir = self.get_model_cache_dir()
         model_name = "model.int8.onnx" if self._use_int8 else "model.onnx"
         model_path = os.path.join(model_dir, model_name)
@@ -244,14 +482,14 @@ class ASREngine:
             model=model_path,
             tokens=tokens_path,
             num_threads=self._num_threads,
-            language=self._language,
+            language="auto",  # SenseVoice detects zh/en/yue/ja/ko itself; same zh quality as "zh"
             use_itn=True,
             provider="cpu",
         )
 
         # Load Silero VAD for intelligent speech segmentation
         # Check bundled location first (PyInstaller), then default cache
-        vad_path = os.path.join(model_dir, "silero_vad.onnx")
+        vad_path = os.path.join(self.get_model_cache_dir(), "silero_vad.onnx")
         if not os.path.exists(vad_path):
             vad_path = DEFAULT_VAD_MODEL
         if os.path.exists(vad_path):
@@ -260,7 +498,7 @@ class ASREngine:
                     model=vad_path,
                     min_silence_duration=0.5,
                     min_speech_duration=0.25,
-                    max_speech_duration=30,
+                    max_speech_duration=VAD_MAX_SPEECH_S,
                 ),
                 sample_rate=16000,
                 num_threads=1,
@@ -273,15 +511,23 @@ class ASREngine:
         progress_cb: ProgressCallback | None = None,
         pause_event: asyncio.Event | None = None,
         cancelled_checker: Callable[[], bool] | None = None,
+        correction_cb: CorrectionCallback | None = None,
+        model_progress_cb: ModelDownloadCallback | None = None,
     ) -> TranscriptionResult:
-        await self.ensure_model()
+        await self.ensure_model(model_progress_cb)
         return await asyncio.to_thread(
             self._transcribe_sync,
             audio_path,
             progress_cb,
             pause_event,
             cancelled_checker,
+            correction_cb,
         )
+
+    def correction_active(self) -> bool:
+        """Whether transcriptions started now will be LLM-corrected."""
+        engine = self._correction_engine
+        return engine is not None and engine.has_model()
 
     def _check_interrupted(
         self,
@@ -292,58 +538,57 @@ class ASREngine:
         if cancelled_checker and cancelled_checker():
             return True
         if pause_event is not None:
-            import time
-
             while not pause_event.is_set():
                 if cancelled_checker and cancelled_checker():
                     return True
                 time.sleep(0.1)
         return False
 
-    def _detect_speech_segments(
-        self,
-        samples: np.ndarray,
-        sample_rate: int,
-        progress_cb: ProgressCallback | None = None,
-    ) -> list[SpeechRegion]:
-        """Use Silero VAD to find speech regions.
+    def _new_vad(self) -> _StreamingVad | None:
+        return _StreamingVad(self._vad_config) if self._vad_config is not None else None
 
-        IMPORTANT: vad.front returns a C++ reference invalidated by pop(),
-        so we must copy start + samples before calling pop().
-        """
-        assert self._vad_config is not None
-        vad = sherpa_onnx.VoiceActivityDetector(
-            self._vad_config, buffer_size_in_seconds=600
+    def _pcm_chunks(self, audio_path: Path, gain_db: float) -> Iterator[np.ndarray]:
+        """Decode to 16 kHz mono int16 through a pipe, yielding ~1 s chunks as ffmpeg produces them."""
+        cmd = [
+            "ffmpeg", "-nostdin", "-loglevel", "error", "-i", str(audio_path),
+            "-ac", "1", "-ar", str(SAMPLE_RATE),
+            "-af", AUDIO_FILTER.format(gain=f"{gain_db:.1f}"),
+            "-f", "s16le", "-",
+        ]  # fmt: skip
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            **_no_window_kwargs(),
         )
-        window = self._vad_config.silero_vad.window_size
-        total = len(samples)
-        last_pct = -1
+        try:
+            assert proc.stdout is not None and proc.stderr is not None
+            while data := proc.stdout.read(SAMPLE_RATE * 2 * READ_CHUNK_S):
+                yield np.frombuffer(data[: len(data) // 2 * 2], dtype=np.int16)
+            if proc.wait() != 0:
+                err = proc.stderr.read().decode("utf-8", "replace").strip()
+                raise RuntimeError(f"ffmpeg 转换失败: {err}")
+        finally:
+            if proc.poll() is None:  # cancelled or failed mid-stream
+                proc.kill()
+                proc.wait()
 
-        # Feed audio to VAD in window-sized chunks.
-        # Progress reporting every 5% to avoid callback overhead in hot loop.
-        for i in range(0, total, window):
-            chunk = samples[i : i + window]
-            if len(chunk) < window:
-                break
-            vad.accept_waveform(chunk)
-            if progress_cb:
-                pct = i * 20 // total  # 0..20 (5% granularity)
-                if pct > last_pct:
-                    last_pct = pct
-                    progress_cb(0.12 + 0.03 * (i / total), "语音检测中", "")
-        vad.flush()
+    def _decode(
+        self, samples: np.ndarray, sample_rate: int
+    ) -> tuple[list[str], list[float]]:
+        assert self._recognizer is not None
+        stream = self._recognizer.create_stream()
+        stream.accept_waveform(sample_rate, samples)
+        self._recognizer.decode_stream(stream)
+        return list(stream.result.tokens), list(stream.result.timestamps)
 
-        regions: list[SpeechRegion] = []
-        while not vad.empty():
-            seg = vad.front
-            regions.append(
-                SpeechRegion(
-                    start_sample=int(seg.start),
-                    samples=np.array(seg.samples, dtype=np.float32),
-                )
-            )
-            vad.pop()
-        return regions
+    def _create_corrector(
+        self, correction_cb: CorrectionCallback | None
+    ) -> StreamingCorrector | None:
+        if not self.correction_active():
+            return None
+        return StreamingCorrector(self._correction_engine, on_update=correction_cb)
 
     def _transcribe_sync(
         self,
@@ -351,267 +596,196 @@ class ASREngine:
         progress_cb: ProgressCallback | None = None,
         pause_event: asyncio.Event | None = None,
         cancelled_checker: Callable[[], bool] | None = None,
+        correction_cb: CorrectionCallback | None = None,
     ) -> TranscriptionResult:
-        assert self._recognizer is not None
-
         duration_ms = probe_duration_ms(audio_path)
-
         if progress_cb:
-            progress_cb(0.05, "准备音频", "")
-
+            progress_cb(0.0, "准备音频", "")
         if self._check_interrupted(pause_event, cancelled_checker):
-            return TranscriptionResult(text="", segments=[], duration_ms=duration_ms)
-
-        wav_path = self._ensure_wav_format(audio_path)
-
+            return TranscriptionResult(
+                text="", segments=[], duration_ms=duration_ms, cancelled=True
+            )
+        gain_db = self._measure_loudness_gain(audio_path)
+        corrector = self._create_corrector(correction_cb)
         try:
-            if progress_cb:
-                progress_cb(0.1, "读取音频", "")
-
-            samples, sample_rate = self._read_wav(wav_path)
-
-            # Use VAD if available, otherwise fall back to fixed chunking
-            if self._vad_config is not None:
-                return self._transcribe_with_vad(
-                    samples,
-                    sample_rate,
+            with closing(self._pcm_chunks(audio_path, gain_db)) as chunks:
+                return self._transcribe_stream(
+                    chunks,
                     duration_ms,
+                    corrector,
                     progress_cb,
                     pause_event,
                     cancelled_checker,
                 )
-
-            return self._transcribe_fixed_chunks(
-                samples,
-                sample_rate,
-                duration_ms,
-                progress_cb,
-                pause_event,
-                cancelled_checker,
-            )
         finally:
-            if wav_path != audio_path and wav_path.exists():
-                wav_path.unlink(missing_ok=True)
+            if corrector is not None:
+                corrector.cancel()  # no-op once finished; stops LLM calls on cancel/error
 
-    def _transcribe_with_vad(
+    def _transcribe_stream(
         self,
-        samples: np.ndarray,
-        sample_rate: int,
+        chunks: Iterable[np.ndarray],
         duration_ms: int,
+        corrector: StreamingCorrector | None,
         progress_cb: ProgressCallback | None,
         pause_event: asyncio.Event | None,
         cancelled_checker: Callable[[], bool] | None,
     ) -> TranscriptionResult:
-        """VAD-guided transcription: split on silence, not on fixed intervals."""
-        assert self._recognizer is not None
+        """Detect speech and recognize while the audio is still being decoded.
 
-        if progress_cb:
-            progress_cb(0.12, "语音检测中", "")
+        A region that ended in silence is recognized as soon as its tail pad has been read
+        (VAD guarantees >= 0.5 s of silence before the next one, more than both pads).
+        A region force-split at VAD_MAX_SPEECH_S has no gap, so it waits for the next
+        region and its window stops at their midpoint.
+        """
+        expected = max(1, duration_ms * SAMPLE_RATE // 1000)
+        audio = np.zeros(expected + SAMPLE_RATE, dtype=np.int16)
+        filled = 0
+        vad = self._new_vad()
+        pending: list[tuple[int, int]] = []
+        prev_end: int | None = None
+        fixed_pos = 0
+        segments: list[Segment] = []
+        raw_text = ""
+        reported = -1.0
+        before = int(VAD_PAD_BEFORE_S * SAMPLE_RATE)
+        after = int(VAD_PAD_AFTER_S * SAMPLE_RATE)
+        forced = int((VAD_MAX_SPEECH_S - 0.5) * SAMPLE_RATE)
 
-        speech_segments = self._detect_speech_segments(
-            samples, sample_rate, progress_cb
-        )
+        def recognize(a: int, b: int) -> None:
+            nonlocal raw_text
+            samples = audio[a:b].astype(np.float32) / 32768.0
+            tokens, stamps = self._decode(samples, SAMPLE_RATE)
+            timed = timed_from_tokens(
+                tokens,
+                stamps,
+                offset_ms=a * 1000 // SAMPLE_RATE,
+                end_ms=b * 1000 // SAMPLE_RATE,
+            )
+            if not timed.text:
+                return
+            new = segments_from_cues(cut_cues(timed), first_index=len(segments))
+            segments.extend(new)
+            for seg in new:
+                raw_text = join_text(raw_text, seg.text)
+            if corrector is not None:
+                corrector.add(new, timed)
 
-        if not speech_segments:
-            if progress_cb:
-                progress_cb(1.0, "完成", "")
-            return TranscriptionResult(text="", segments=[], duration_ms=duration_ms)
+        def recognize_region(region: tuple[int, int], next_start: int | None) -> None:
+            nonlocal prev_end
+            a, b = region
+            lo = (prev_end + a) // 2 if prev_end is not None else 0
+            hi = (b + next_start) // 2 if next_start is not None else filled
+            recognize(max(lo, a - before), min(hi, b + after))
+            prev_end = b
 
-        all_texts: list[str] = []
-        all_segments: list[Segment] = []
-        total = len(speech_segments)
+        def report(force: bool) -> None:
+            nonlocal reported
+            progress = min(1.0, filled / expected) * 0.99
+            if progress_cb and (force or progress - reported >= 0.01):
+                reported = progress
+                progress_cb(progress, "转写中", raw_text)
 
-        for idx, seg in enumerate(speech_segments):
+        for chunk in chunks:
             if self._check_interrupted(pause_event, cancelled_checker):
-                break
-
-            progress = 0.15 + 0.80 * (idx / total)
-            if progress_cb:
-                progress_cb(progress, f"转写中 {idx + 1}/{total}", " ".join(all_texts))
-
-            stream = self._recognizer.create_stream()
-            stream.accept_waveform(sample_rate, seg.samples)
-            self._recognizer.decode_stream(stream)
-
-            text = stream.result.text.strip()
-            if not text:
-                continue
-
-            all_texts.append(text)
-
-            start_ms = int(seg.start_sample / sample_rate * 1000)
-            end_ms = start_ms + int(len(seg.samples) / sample_rate * 1000)
-
-            # Split into sentence-level segments within this VAD region
-            sentences = _split_sentences(text) or [text]
-            seg_duration_ms = end_ms - start_ms
-            total_chars = sum(len(s) for s in sentences)
-            cursor_ms = start_ms
-
-            for s_idx, sentence in enumerate(sentences):
-                proportion = len(sentence) / total_chars if total_chars > 0 else 1.0
-                s_end = cursor_ms + int(seg_duration_ms * proportion)
-                if s_idx == len(sentences) - 1:
-                    s_end = end_ms
-                all_segments.append(
-                    Segment(
-                        index=len(all_segments),
-                        start_ms=cursor_ms,
-                        end_ms=s_end,
-                        text=sentence,
-                    )
+                text = enhance_text(raw_text)
+                return TranscriptionResult(
+                    text=text,
+                    segments=segments,
+                    duration_ms=duration_ms,
+                    raw_text=text,
+                    cancelled=True,
                 )
-                cursor_ms = s_end
+            if filled + len(chunk) > len(audio):  # duration probe was short
+                grow = max(len(chunk), 60 * SAMPLE_RATE)
+                audio = np.concatenate([audio, np.zeros(grow, dtype=np.int16)])
+            audio[filled : filled + len(chunk)] = chunk
+            filled += len(chunk)
+            count = len(segments)
+            if vad is not None:
+                pending.extend(vad.accept(chunk.astype(np.float32) / 32768.0))
+                while pending:
+                    a, b = pending[0]
+                    if (
+                        b - a >= forced
+                    ):  # no gap after a forced split: need the next start
+                        if len(pending) < 2:
+                            break
+                        recognize_region(pending.pop(0), pending[0][0])
+                    elif filled >= b + after:
+                        recognize_region(pending.pop(0), None)
+                    else:
+                        break
+            else:
+                step = FIXED_CHUNK_S * SAMPLE_RATE
+                while filled - fixed_pos >= step:
+                    recognize(fixed_pos, fixed_pos + step)
+                    fixed_pos += step
+            report(force=len(segments) > count)
 
-        final_text = " ".join(all_texts).strip()
+        if vad is not None:
+            pending.extend(vad.flush())
+            for k, region in enumerate(pending):
+                nxt = pending[k + 1][0] if k + 1 < len(pending) else None
+                recognize_region(region, nxt)
+        elif fixed_pos < filled:
+            recognize(fixed_pos, filled)
 
+        raw_text = enhance_text(raw_text)
         if progress_cb:
-            progress_cb(1.0, "完成", final_text)
-
-        return TranscriptionResult(
-            text=final_text, segments=all_segments, duration_ms=duration_ms
+            progress_cb(1.0, "转写完成", raw_text)
+        result = TranscriptionResult(
+            text=raw_text, segments=segments, duration_ms=duration_ms, raw_text=raw_text
         )
+        if corrector is None or not segments:
+            return result
+        batches = corrector.finish(cancelled_checker)
+        if batches is None:
+            result.cancelled = True
+            return result
+        corrected_text = ""
+        for batch in batches:
+            corrected_text = join_text(corrected_text, batch.text)
+            cues = (
+                [Cue(s.start_ms, s.end_ms, s.text) for s in batch.segments]
+                if batch.failed
+                else cut_cues(align_corrected(batch.timed, batch.text))
+            )
+            result.corrected_segments.extend(
+                segments_from_cues(cues, first_index=len(result.corrected_segments))
+            )
+        result.text = corrected_text
+        result.correction_failed_batches = sum(b.failed for b in batches)
+        return result
 
-    def _transcribe_fixed_chunks(
-        self,
-        samples: np.ndarray,
-        sample_rate: int,
-        duration_ms: int,
-        progress_cb: ProgressCallback | None,
-        pause_event: asyncio.Event | None,
-        cancelled_checker: Callable[[], bool] | None,
-    ) -> TranscriptionResult:
-        """Fallback: fixed 30-second chunking when VAD is unavailable."""
-        assert self._recognizer is not None
-
-        chunk_size = sample_rate * 30
-        total_samples = len(samples)
-        all_texts: list[str] = []
-        all_segments: list[Segment] = []
-        current_offset_ms = 0
-        num_chunks = max(1, (total_samples + chunk_size - 1) // chunk_size)
-
-        for chunk_idx in range(num_chunks):
-            if self._check_interrupted(pause_event, cancelled_checker):
-                break
-
-            start_idx = chunk_idx * chunk_size
-            end_idx = min(start_idx + chunk_size, total_samples)
-            chunk_samples = samples[start_idx:end_idx]
-            chunk_duration_ms = int((end_idx - start_idx) / sample_rate * 1000)
-
-            progress = 0.1 + 0.8 * (chunk_idx / num_chunks)
-            if progress_cb:
-                progress_cb(
-                    progress,
-                    f"转写中 {chunk_idx + 1}/{num_chunks}",
-                    " ".join(all_texts),
-                )
-
-            stream = self._recognizer.create_stream()
-            stream.accept_waveform(sample_rate, chunk_samples)
-            self._recognizer.decode_stream(stream)
-
-            chunk_text = stream.result.text.strip()
-            if chunk_text:
-                all_texts.append(chunk_text)
-                chunk_segs = self._create_segments(chunk_text, chunk_duration_ms)
-                for s in chunk_segs:
-                    s.index = len(all_segments)
-                    s.start_ms += current_offset_ms
-                    s.end_ms += current_offset_ms
-                    all_segments.append(s)
-
-            current_offset_ms += chunk_duration_ms
-
-        final_text = " ".join(all_texts).strip()
-        if progress_cb:
-            progress_cb(1.0, "完成", final_text)
-
-        return TranscriptionResult(
-            text=final_text, segments=all_segments, duration_ms=duration_ms
-        )
-
-    def _ensure_wav_format(self, audio_path: Path) -> Path:
-        """Convert audio to 16kHz mono WAV if needed."""
-        # If already a WAV file, check format
-        if audio_path.suffix.lower() == ".wav":
-            try:
-                with wave.open(str(audio_path), "rb") as wf:
-                    if wf.getnchannels() == 1 and wf.getframerate() == 16000:
-                        return audio_path
-            except Exception:
-                pass
-
-        # Convert using ffmpeg
-        import tempfile
-
-        tmp_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-        tmp_path = Path(tmp_file.name)
-        tmp_file.close()
-
+    @staticmethod
+    def _measure_loudness_gain(audio_path: Path) -> float:
+        """Measure integrated loudness (EBU R128) and return gain to target."""
         cmd = [
             "ffmpeg",
-            "-y",
             "-nostdin",
+            "-t",
+            str(LOUDNESS_PROBE_S),
             "-i",
             str(audio_path),
             "-ac",
             "1",
             "-ar",
             "16000",
-            str(tmp_path),
+            "-af",
+            "highpass=f=80,lowpass=f=7800,ebur128",
+            "-f",
+            "null",
+            "-",
         ]
         result = subprocess.run(cmd, **_subprocess_kwargs())
-        if result.returncode != 0:
-            raise RuntimeError(f"ffmpeg 转换失败: {result.stderr.strip()}")
-
-        return tmp_path
-
-    def _read_wav(self, wav_path: Path) -> tuple[np.ndarray, int]:
-        """Read WAV file and return contiguous float32 numpy array."""
-        with wave.open(str(wav_path), "rb") as wf:
-            sample_rate = wf.getframerate()
-            raw_data = wf.readframes(wf.getnframes())
-        # ascontiguousarray ensures optimal memory layout for ONNX Runtime
-        samples = np.frombuffer(raw_data, dtype=np.int16).astype(np.float32) / 32768.0
-        return np.ascontiguousarray(samples), sample_rate
-
-    def _create_segments(self, text: str, duration_ms: int) -> list[Segment]:
-        """Split text into segments with estimated timestamps."""
-        sentences = _split_sentences(text) or ([text.strip()] if text.strip() else [])
-        sentences = [s for s in sentences if s]
-
-        if not sentences:
-            return []
-
-        segments = []
-        total_chars = sum(len(s) for s in sentences)
-        if total_chars == 0:
-            return []
-
-        current_ms = 0
-        for i, sentence in enumerate(sentences):
-            # Estimate end time based on character proportion
-            char_proportion = len(sentence) / total_chars
-            segment_duration = int(duration_ms * char_proportion)
-            end_ms = min(current_ms + segment_duration, duration_ms)
-
-            # Ensure last segment goes to end
-            if i == len(sentences) - 1:
-                end_ms = duration_ms
-
-            segments.append(
-                Segment(
-                    index=i,
-                    start_ms=current_ms,
-                    end_ms=end_ms,
-                    text=sentence,
-                )
-            )
-            current_ms = end_ms
-
-        return segments
+        matches = re.findall(r"I:\s*(-?[\d.]+) LUFS", result.stderr)
+        if not matches:
+            return 0.0
+        integrated = float(matches[-1])
+        if integrated <= -70.0:  # silence, nothing to normalize
+            return 0.0
+        gain = LOUDNESS_TARGET_LUFS - integrated
+        return max(-MAX_LOUDNESS_GAIN_DB, min(MAX_LOUDNESS_GAIN_DB, gain))
 
 
 def probe_duration_ms(audio_path: Path) -> int:

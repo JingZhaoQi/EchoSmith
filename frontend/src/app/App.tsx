@@ -1,229 +1,230 @@
-// Enhanced version of App.tsx with modern UI improvements
-import { useEffect, useState } from "react";
+// Workspace: sidebar (new task + library) and a results-first main area (task view or intake).
+import { useCallback, useEffect, useRef, useState } from "react";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { MoonIcon, SettingsIcon, SparklesIcon, SunIcon, UploadIcon } from "lucide-react";
 
 import { useTheme } from "../hooks/useTheme";
 import { BatchTaskComposer } from "../components/BatchTaskComposer";
+import { SettingsPanel, type CorrectionState } from "../components/SettingsPanel";
+import { TaskView } from "../components/TaskView";
 import { UrlTaskComposer } from "../components/UrlTaskComposer";
-import { TaskStreamPanel } from "../components/TaskStreamPanel";
-import { ResultPanel } from "../components/ResultPanel";
-import { ThemeToggle } from "../components/ThemeToggle";
-import { ensureBackendBase, fetchHealth, listTasks } from "../lib/api";
-import { useBackendStatus } from "../lib/backendStatus";
-import { useTasksStore } from "../hooks/useTasksStore";
-import { useTaskSubscription } from "../hooks/useTaskSubscription";
+import { ResizeHandle } from "../components/ResizeHandle";
+import { Button } from "../components/ui/button";
 import { AuroraBackground } from "../components/ui/aurora-background";
+import { ensureBackendBase, fetchSettings, listTaskSummaries } from "../lib/api";
+import { isActive, useTasksStore } from "../hooks/useTasksStore";
+import { useTaskSubscription } from "../hooks/useTaskSubscription";
+import { useFileDrop } from "../hooks/useFileDrop";
+import { useAutoSave } from "../hooks/useAutoSave";
+import { isNumber, usePersistentState } from "../hooks/usePersistentState";
+import { useLocaleStore, useT } from "../lib/i18n";
 
 const queryClient = new QueryClient();
+const logoUrl = new URL("../../echo_logo.svg", import.meta.url).href;
+const POLL_ACTIVE_MS = 1000;
+const SIDEBAR_DEFAULT = 300;
+const SIDEBAR_MIN = 240;
+const clampSidebar = (width: number) =>
+  Math.round(Math.min(Math.max(width, SIDEBAR_MIN), Math.max(SIDEBAR_MIN, window.innerWidth * 0.5)));
+const POLL_IDLE_MS = 5000;
 
-const logoUrl = new URL('../../echo_logo.svg', import.meta.url).href;
+type SourceTab = "batch" | "url";
 
-type LeftTab = "batch" | "url";
+function IntakeView({ tab, setTab }: { tab: SourceTab; setTab(tab: SourceTab): void }): JSX.Element {
+  const t = useT();
+  const tabs: Array<{ key: SourceTab; label: string }> = [
+    { key: "batch", label: t.tabBatch },
+    { key: "url", label: t.tabUrl },
+  ];
+  return (
+    <div className="flex h-full min-h-0 flex-col gap-4">
+      <div role="tablist" className="relative flex flex-shrink-0 rounded-2xl border border-white/60 bg-white/40 p-1 shadow-sm dark:border-white/[0.08] dark:bg-white/[0.05]">
+        <div
+          className="absolute bottom-1 top-1 rounded-xl bg-white shadow-sm transition-transform duration-200 ease-out dark:bg-white/[0.10]"
+          style={{ width: "calc(50% - 4px)", transform: tab === "batch" ? "translateX(0)" : "translateX(calc(100% + 8px))" }}
+        />
+        {tabs.map(({ key, label }) => (
+          <button
+            key={key}
+            role="tab"
+            aria-selected={tab === key}
+            onClick={() => setTab(key)}
+            className={`relative z-10 flex-1 rounded-xl px-4 py-2 text-sm font-medium transition-colors duration-200 ${
+              tab === key ? "text-slate-950 dark:text-white" : "text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      {/* both stay mounted: switching tabs never drops a running batch or download */}
+      <div className="min-h-0 flex-1" hidden={tab !== "batch"}>
+        <BatchTaskComposer />
+      </div>
+      <div className="min-h-0 flex-1" hidden={tab !== "url"}>
+        <UrlTaskComposer />
+      </div>
+    </div>
+  );
+}
 
 function AppShell(): JSX.Element {
   const [theme, setTheme] = useTheme();
-  const [leftTab, setLeftTab] = useState<LeftTab>("batch");
+  const t = useT();
+  const locale = useLocaleStore((state) => state.locale);
+  const setLocale = useLocaleStore((state) => state.setLocale);
+  const [showSettings, setShowSettings] = useState(false);
+  const [correction, setCorrection] = useState<CorrectionState>({ on: false, ready: false });
+  const [dropNotice, setDropNotice] = useState<string | null>(null);
+  const [sourceTab, setSourceTab] = useState<SourceTab>("batch");
+  const [sidebarWidth, setSidebarWidth] = usePersistentState("echosmith-sidebar-width", SIDEBAR_DEFAULT, isNumber);
+  const sidebarRef = useRef<HTMLElement | null>(null);
+  const [systemDark, setSystemDark] = useState(
+    () => typeof window !== "undefined" && window.matchMedia("(prefers-color-scheme: dark)").matches
+  );
   const activeTaskId = useTasksStore((state) => state.activeTaskId);
-  const setTasks = useTasksStore((state) => state.setTasks);
-  const setActiveTask = useTasksStore((state) => state.setActiveTask);
-  const backendStatus = useBackendStatus();
+  const activeTask = useTasksStore((state) => (state.activeTaskId ? state.tasks[state.activeTaskId] : undefined));
+  const mergeSummaries = useTasksStore((state) => state.mergeSummaries);
+  const anyActive = useTasksStore((state) => Object.values(state.tasks).some(isActive));
+  const darkActive = theme === "dark" || (theme === "system" && systemDark);
 
-  const {
-    data: health,
-    isLoading: isHealthLoading,
-    isError: isHealthError
-  } = useQuery({ queryKey: ["health"], queryFn: fetchHealth, refetchInterval: 30_000 });
   const tasksQuery = useQuery({
     queryKey: ["tasks"],
-    queryFn: listTasks
+    queryFn: listTaskSummaries,
+    refetchInterval: anyActive ? POLL_ACTIVE_MS : POLL_IDLE_MS,
   });
 
+  const openedOnce = useRef(false);
   useEffect(() => {
-    if (tasksQuery.data) {
-      setTasks(tasksQuery.data);
-      if (!activeTaskId && tasksQuery.data.length > 0) {
-        const running = tasksQuery.data.find((task) => task.status === "running") ?? tasksQuery.data[0];
-        setActiveTask(running.id);
-      }
+    if (!tasksQuery.data) return;
+    mergeSummaries(tasksQuery.data);
+    if (!openedOnce.current) {
+      openedOnce.current = true;
+      const running = tasksQuery.data.find(isActive);
+      if (running) useTasksStore.getState().setActiveTask(running.id);
     }
-  }, [tasksQuery.data, activeTaskId, setTasks, setActiveTask]);
+  }, [tasksQuery.data, mergeSummaries]);
 
   useTaskSubscription(activeTaskId);
+  useAutoSave();
+
+  const onRejected = useCallback(() => {
+    setDropNotice(t.unsupportedFormat);
+    setTimeout(() => setDropNotice(null), 3000);
+  }, [t]);
+  const onAccepted = useCallback(() => setSourceTab("batch"), []);
+  const dragging = useFileDrop(onAccepted, onRejected);
 
   useEffect(() => {
-    document.title = "闻见 · EchoSmith";
     void ensureBackendBase();
   }, []);
 
-  const healthStatusText = (() => {
-    if (isHealthLoading) {
-      return "后端检测中…";
-    }
-    if (isHealthError) {
-      return "后端不可用";
-    }
-    if (health?.status === "ok") {
-      return "后端在线";
-    }
-    // 显示具体缺少什么
-    if (health && !health.ffmpeg) {
-      return "缺少 ffmpeg（brew install ffmpeg）";
-    }
-    return "后端降级";
-  })();
+  useEffect(() => {
+    document.title = locale === "zh" ? "闻见 · EchoSmith" : "EchoSmith";
+    document.documentElement.lang = locale === "zh" ? "zh-CN" : "en";
+  }, [locale]);
 
-  const healthIndicatorClass = (() => {
-    if (isHealthLoading) {
-      return "bg-amber-400 animate-pulse";
-    }
-    if (isHealthError || health?.status !== "ok") {
-      return "bg-red-500";
-    }
-    return "bg-emerald-500";
-  })();
+  useEffect(() => {
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const update = () => setSystemDark(media.matches);
+    update();
+    media.addEventListener?.("change", update);
+    return () => media.removeEventListener?.("change", update);
+  }, []);
 
-  const backendStatusLabel = (() => {
-    if (backendStatus.status === "ready") {
-      return null;
+  // Refresh correction status on mount and when the settings panel closes
+  useEffect(() => {
+    if (!showSettings) {
+      fetchSettings()
+        .then((s) => {
+          const on = s.correction.mode !== "none";
+          setCorrection({ on, ready: on && s.correction.api_key_set });
+        })
+        .catch(() => {});
     }
-    if (backendStatus.status === "error") {
-      return backendStatus.message ?? "后端认证失败";
-    }
-    if (backendStatus.status === "initializing") {
-      return backendStatus.message ?? "后端启动中…";
-    }
-    return null;
-  })();
+  }, [showSettings]);
 
   return (
     <AuroraBackground className="h-screen">
-      <div className="h-screen flex flex-col backdrop-blur-[2px] overflow-hidden">
-        {/* macOS-style Header */}
-        <header className="border-b border-black/[0.08] dark:border-white/[0.08] backdrop-blur-2xl backdrop-saturate-150 bg-white/80 dark:bg-zinc-900/80 px-8 py-4 flex items-center justify-between sticky top-0 z-50 shadow-[0_1px_0_rgba(0,0,0,0.05)] dark:shadow-[0_1px_0_rgba(255,255,255,0.05)]">
-          <div className="flex items-center gap-4">
-            <div className="relative group">
-              <img
-                src={logoUrl}
-                alt="EchoSmith logo"
-                className="h-10 w-10 relative transform group-hover:scale-105 transition-transform duration-200"
-              />
-            </div>
-            <div>
-              <h1 className="text-lg font-semibold tracking-tight text-gray-900 dark:text-white">
-                闻见 · EchoSmith
+      <div className="flex h-screen flex-col overflow-hidden">
+        <header className="glass-toolbar z-50 flex items-center justify-between px-6 py-3">
+          <div className="flex min-w-0 items-center gap-3">
+            <img src={logoUrl} alt="EchoSmith logo" className="h-9 w-9 flex-shrink-0" />
+            <div className="min-w-0">
+              <h1 className="truncate text-base font-semibold tracking-tight text-slate-950 dark:text-white">
+                {locale === "zh" ? "闻见 · EchoSmith" : "EchoSmith"}
               </h1>
-              <p className="text-xs text-gray-500 dark:text-gray-400">
-                跨平台本地语音转写工作台
-              </p>
+              <p className="truncate text-[11px] text-slate-500 dark:text-slate-400">{t.appSubtitle}</p>
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
-            {/* macOS-style status indicator */}
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/[0.04] dark:bg-white/[0.06] border border-black/[0.06] dark:border-white/[0.06]" aria-live="polite">
-              <div className="relative">
-                <span className={`h-2 w-2 rounded-full ${healthIndicatorClass}`} aria-hidden="true" />
-                {/* Only show ping animation when loading or error */}
-                {(isHealthLoading || isHealthError || health?.status !== "ok") && (
-                  <span className={`absolute inset-0 h-2 w-2 rounded-full ${healthIndicatorClass} animate-ping opacity-75`} aria-hidden="true" />
-                )}
-              </div>
-              <span className="text-xs font-medium text-gray-700 dark:text-gray-300">{healthStatusText}</span>
-            </div>
-
-            {backendStatusLabel ? (
-              <div className="px-3 py-1.5 rounded-full bg-amber-500/10 dark:bg-amber-400/10 border border-amber-500/20 dark:border-amber-400/20 text-xs font-medium text-amber-700 dark:text-amber-300" aria-live="polite">
-                {backendStatusLabel}
-              </div>
-            ) : null}
-
-            <ThemeToggle theme={theme} onThemeChange={setTheme} />
+          <div className="flex items-center gap-2">
+            <Button
+              variant="secondary"
+              size="icon"
+              className="text-xs font-semibold"
+              onClick={() => setLocale(locale === "zh" ? "en" : "zh")}
+              title={t.switchLanguage}
+              aria-label={t.switchLanguage}
+            >
+              {t.languageButton}
+            </Button>
+            <Button
+              variant="secondary"
+              size="icon"
+              onClick={() => setTheme(darkActive ? "light" : "dark")}
+              title={darkActive ? t.switchToLight : t.switchToDark}
+              aria-label={darkActive ? t.switchToLight : t.switchToDark}
+            >
+              {darkActive ? <SunIcon className="h-4 w-4" /> : <MoonIcon className="h-4 w-4" />}
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              className={`gap-1.5 ${correction.ready ? "status-pill-success border-emerald-500/20" : ""}`}
+              onClick={() => setShowSettings(!showSettings)}
+              title={t.openSettings}
+            >
+              {correction.ready ? <SparklesIcon className="h-4 w-4" /> : <SettingsIcon className="h-4 w-4" />}
+              {t.settings}
+            </Button>
           </div>
         </header>
 
-        {/* Enhanced Main Content */}
-        <main className="flex-1 grid lg:grid-cols-[440px_1fr] grid-rows-[1fr] gap-8 p-8 pb-4 min-h-0">
-          <section className="flex flex-col gap-4 animate-slide-in-left min-h-0">
-            {/* Tab switcher with pill indicator */}
-            <div className="relative flex rounded-xl bg-black/[0.04] dark:bg-white/[0.06] p-1">
-              {/* Sliding pill background */}
-              <div
-                className="absolute top-1 bottom-1 rounded-lg bg-white dark:bg-zinc-800 shadow-sm transition-transform duration-200 ease-out"
-                style={{
-                  width: "calc(50% - 4px)",
-                  transform: leftTab === "batch" ? "translateX(0)" : "translateX(calc(100% + 8px))",
-                }}
-              />
-              {([
-                { key: "batch" as LeftTab, label: "批量转写" },
-                { key: "url" as LeftTab, label: "在线视频" },
-              ]).map(({ key, label }) => (
-                <button
-                  key={key}
-                  onClick={() => setLeftTab(key)}
-                  className={`relative z-10 flex-1 px-4 py-1.5 rounded-lg text-sm font-medium transition-colors duration-200 ${
-                    leftTab === key
-                      ? "text-gray-900 dark:text-white"
-                      : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-            <div className="flex-1 min-h-0">
-              {leftTab === "batch" ? <BatchTaskComposer /> : <UrlTaskComposer />}
-            </div>
+        <main className="flex min-h-0 flex-1 gap-2 p-4 xl:p-5">
+          <section ref={sidebarRef} className="min-h-0 flex-shrink-0" style={{ width: sidebarWidth }}>
+            <IntakeView tab={sourceTab} setTab={setSourceTab} />
           </section>
-          <section className="flex flex-col gap-6 animate-slide-in-right min-h-0">
-            <TaskStreamPanel />
-            <ResultPanel />
+          <ResizeHandle
+            label={t.resizeHint}
+            value={sidebarWidth}
+            onDrag={(x) => setSidebarWidth(clampSidebar(x - (sidebarRef.current?.getBoundingClientRect().left ?? 0)))}
+            onStep={(d) => setSidebarWidth(clampSidebar(sidebarWidth + d * 16))}
+            onReset={() => setSidebarWidth(SIDEBAR_DEFAULT)}
+          />
+          <section className="min-h-0 min-w-0 flex-1">
+            <TaskView task={activeTask} correctionOn={correction.on} correctionActive={correction.ready} />
           </section>
         </main>
+
+        {(dragging || dropNotice) && (
+          <div className="pointer-events-none fixed inset-0 z-[90] flex items-center justify-center bg-sky-500/10 backdrop-blur-[2px]">
+            <div className="flex flex-col items-center gap-3 rounded-3xl border-2 border-dashed border-sky-400 bg-white/80 px-12 py-10 text-slate-900 shadow-xl dark:bg-slate-900/80 dark:text-white">
+              <UploadIcon className="h-10 w-10 text-sky-600 dark:text-sky-300" />
+              <span className="text-base font-semibold">{dropNotice ?? t.dropToAdd}</span>
+            </div>
+          </div>
+        )}
+
+        {showSettings && (
+          <SettingsPanel
+            onClose={() => setShowSettings(false)}
+            onSaved={setCorrection}
+            theme={theme}
+            onThemeChange={setTheme}
+          />
+        )}
       </div>
-
-      {/* Additional animations CSS */}
-      <style>{`
-        @keyframes gradient {
-          0%, 100% { background-position: 0% 50%; }
-          50% { background-position: 100% 50%; }
-        }
-
-        .animate-gradient {
-          background-size: 200% 200%;
-          animation: gradient 3s ease infinite;
-        }
-
-        @keyframes slide-in-left {
-          from {
-            opacity: 0;
-            transform: translateX(-20px);
-          }
-          to {
-            opacity: 1;
-            transform: translateX(0);
-          }
-        }
-
-        @keyframes slide-in-right {
-          from {
-            opacity: 0;
-            transform: translateX(20px);
-          }
-          to {
-            opacity: 1;
-            transform: translateX(0);
-          }
-        }
-
-        .animate-slide-in-left {
-          animation: slide-in-left 0.5s ease-out;
-        }
-
-        .animate-slide-in-right {
-          animation: slide-in-right 0.5s ease-out 0.1s both;
-        }
-      `}</style>
     </AuroraBackground>
   );
 }

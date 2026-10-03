@@ -10,13 +10,9 @@ from pathlib import Path
 
 import uvicorn
 
-# Set MODELSCOPE_CACHE, SSL certs, and PATH early if running from PyInstaller bundle
+# Set SSL certs and PATH early if running from PyInstaller bundle
 if getattr(sys, "frozen", False):
     bundle_dir = Path(sys._MEIPASS)  # type: ignore
-    bundled_models = bundle_dir / "models_cache"
-    if bundled_models.exists():
-        os.environ["MODELSCOPE_CACHE"] = str(bundled_models)
-        print(f"[INIT] Set MODELSCOPE_CACHE to: {bundled_models}")
 
     # Fix SSL certificate verification in PyInstaller bundle.
     # Bundled Python can't find system CA certs; use certifi's CA bundle.
@@ -71,6 +67,7 @@ if getattr(sys, "frozen", False):
     bundle_dir = Path(sys._MEIPASS)  # type: ignore
     if str(bundle_dir) not in sys.path:
         sys.path.insert(0, str(bundle_dir))
+
     from app import app
 else:
     # Running in development

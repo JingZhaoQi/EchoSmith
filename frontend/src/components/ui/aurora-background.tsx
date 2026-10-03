@@ -13,62 +13,17 @@ export const AuroraBackground: React.FC<AuroraBackgroundProps> = ({
 }) => {
   return (
     <div className={`relative overflow-hidden ${className}`}>
-      {/* macOS-style clean background */}
-      <div className="absolute inset-0 bg-gradient-to-br from-gray-50 via-white to-gray-100/50 dark:from-zinc-900 dark:via-black dark:to-zinc-950" />
-
-      {/* Subtle accent gradients - very minimal */}
-      <div className="absolute inset-0 overflow-hidden">
-        {/* Light mode: barely visible accent */}
-        <div className="dark:hidden">
-          <div
-            className="absolute top-0 right-0 w-[800px] h-[800px] opacity-[0.03]"
-            style={{
-              background: `radial-gradient(circle, rgba(99, 102, 241, 0.4), transparent 70%)`,
-              filter: "blur(100px)",
-            }}
-          />
-        </div>
-
-        {/* Dark mode: subtle purple glow */}
-        <div className="hidden dark:block">
-          <div
-            className="absolute top-0 right-0 w-[800px] h-[800px] opacity-10"
-            style={{
-              background: `radial-gradient(circle, rgba(139, 92, 246, 0.3), transparent 70%)`,
-              filter: "blur(100px)",
-            }}
-          />
-        </div>
-      </div>
+      <div className="absolute top-0 right-0 bottom-0 left-0 app-material-bg" />
+      <div className="absolute top-0 right-0 bottom-0 left-0 opacity-[0.34] dark:opacity-[0.18]"
+        style={{
+          backgroundImage:
+            "linear-gradient(90deg, rgba(255,255,255,0.36) 0, rgba(255,255,255,0) 1px), linear-gradient(0deg, rgba(255,255,255,0.26) 0, rgba(255,255,255,0) 1px)",
+          backgroundSize: "48px 48px",
+        }}
+      />
 
       {/* Content */}
       <div className="relative z-10 h-full">{children}</div>
-
-      <style>{`
-        @keyframes aurora {
-          0%, 100% {
-            transform: translate(0, 0) rotate(0deg) scale(1);
-          }
-          33% {
-            transform: translate(30px, -30px) rotate(120deg) scale(1.1);
-          }
-          66% {
-            transform: translate(-20px, 20px) rotate(240deg) scale(0.9);
-          }
-        }
-
-        @keyframes aurora-alt {
-          0%, 100% {
-            transform: translate(0, 0) rotate(0deg) scale(1);
-          }
-          33% {
-            transform: translate(-30px, 30px) rotate(-120deg) scale(1.1);
-          }
-          66% {
-            transform: translate(20px, -20px) rotate(-240deg) scale(0.9);
-          }
-        }
-      `}</style>
     </div>
   );
 };
