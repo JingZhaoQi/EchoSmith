@@ -117,9 +117,17 @@ export function BatchTaskComposer(): JSX.Element {
             {pending === 0 && done > 0 ? t.allDone : pending > 0 && done > 0 ? t.resumeBatch(pending) : t.startBatch(pending)}
           </Button>
         )}
-        <Button variant="secondary" className="gap-1.5" disabled={items.length === 0} onClick={() => void clear()} title={t.clearList}>
+        {/* icon-only: with a text label the start button wraps at the default sidebar width */}
+        <Button
+          variant="secondary"
+          size="icon"
+          className="h-10 w-10 flex-shrink-0"
+          disabled={items.length === 0}
+          onClick={() => void clear()}
+          title={t.clearList}
+          aria-label={t.clearList}
+        >
           <Trash2Icon className="h-4 w-4" />
-          {t.clearList}
         </Button>
       </div>
     </div>

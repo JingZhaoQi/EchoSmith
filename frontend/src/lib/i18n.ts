@@ -58,7 +58,7 @@ const zh = {
   clickOrDrag: "点击选择或拖拽文件到此处",
   supportedFormats: "支持 MP3 / WAV / M4A / MP4 / MOV 等常见格式",
   allDone: "全部完成",
-  resumeBatch: (n: number) => `继续转写 (剩余 ${n} 个文件)`,
+  resumeBatch: (n: number) => `继续转写 (余 ${n} 个)`,
   startBatch: (n: number) => `开始转写 (${n} 个文件)`,
 
   // URL composer
@@ -212,8 +212,8 @@ const en: Messages = {
   clickOrDrag: "Click to choose or drag files here",
   supportedFormats: "Supports MP3 / WAV / M4A / MP4 / MOV and more",
   allDone: "All Done",
-  resumeBatch: (n) => `Resume (${n} file${n === 1 ? "" : "s"} left)`,
-  startBatch: (n) => `Start Transcription (${n} file${n === 1 ? "" : "s"})`,
+  resumeBatch: (n) => `Resume (${n} left)`,
+  startBatch: (n) => `Transcribe ${n} file${n === 1 ? "" : "s"}`,
 
   platformWaiting: "Waiting for link",
   platformWaitingHint: "You can paste the full share text",
