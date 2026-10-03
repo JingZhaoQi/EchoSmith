@@ -1,7 +1,7 @@
 // Batch queue for local files: lives outside components so switching views never loses progress.
 import { create } from "zustand";
 
-import { cancelTask, createTaskFromFile, createTaskFromPath, errorMessage, type TaskSnapshot } from "../lib/api";
+import { cancelTask, createTaskFromFile, createTaskFromPath, deleteTask, errorMessage, type TaskSnapshot } from "../lib/api";
 import { useTasksStore, waitForTerminal } from "./useTasksStore";
 
 export const MEDIA_EXTENSIONS = [
@@ -35,7 +35,8 @@ interface BatchState {
   removeItem(id: string): void;
   start(): void;
   stop(): void;
-  clear(): void;
+  /** Stop, drop every file, delete their tasks and empty the output area. */
+  clear(): Promise<void>;
 }
 
 let nextId = 0;
@@ -69,9 +70,19 @@ export const useBatchStore = create<BatchState>((set, get) => ({
       if (item.status === "processing" && item.taskId) void cancelTask(item.taskId).catch(() => undefined);
     }
   },
-  clear: () => {
+  clear: async () => {
     get().stop();
+    const taskIds = get().items.flatMap((item) => (item.taskId ? [item.taskId] : []));
     set({ items: [] });
+    const tasks = useTasksStore.getState();
+    tasks.setActiveTask(null);
+    await Promise.all(
+      taskIds.map((id) =>
+        deleteTask(id)
+          .catch(() => undefined) // already gone
+          .then(() => tasks.removeTask(id))
+      )
+    );
   },
 }));
 

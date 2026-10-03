@@ -125,6 +125,9 @@ const zh = {
 
   // Output area & saving
   outputTitle: "转写结果",
+  resizeHint: "拖动调整宽度，双击恢复默认",
+  hideCorrection: "关闭智能纠错栏",
+  showCorrection: "显示智能纠错栏",
   downloading: "下载中",
   close: "关闭",
   exportFailed: "导出失败",
@@ -264,6 +267,9 @@ const en: Messages = {
   hotwordsFormatHint: "Supports .txt files, one term per line or comma-separated",
 
   outputTitle: "Transcript",
+  resizeHint: "Drag to resize, double-click to reset",
+  hideCorrection: "Close the correction panel",
+  showCorrection: "Show the correction panel",
   downloading: "Downloading",
   close: "Close",
   exportFailed: "Export failed",

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { cancelTask, createTaskFromPath } from "../lib/api";
+import { cancelTask, createTaskFromPath, deleteTask } from "../lib/api";
 import { useBatchStore } from "./useBatchStore";
 import { useTasksStore } from "./useTasksStore";
 import { makeTask } from "../test/fixtures";
@@ -9,6 +9,7 @@ vi.mock("../lib/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/api")>()),
   createTaskFromPath: vi.fn(),
   cancelTask: vi.fn(() => Promise.resolve()),
+  deleteTask: vi.fn(() => Promise.resolve()),
 }));
 
 let created = 0;
@@ -90,4 +91,23 @@ describe("batch queue", () => {
     expect(useBatchStore.getState().items).toHaveLength(1);
   });
 
+
+  it("clear list stops the batch, deletes its tasks and empties the output", async () => {
+    const store = useBatchStore.getState();
+    store.addFiles([{ name: "a.m4a", path: "/x/a.m4a" }, { name: "b.m4a", path: "/x/b.m4a" }]);
+    store.start();
+    await until(() => created === 1);
+    finish("task1", "completed");
+    await until(() => created === 2);
+    useTasksStore.getState().selectTask("task1"); // looking at a finished file
+
+    await useBatchStore.getState().clear();
+
+    expect(useBatchStore.getState()).toMatchObject({ items: [], running: false });
+    expect(cancelTask).toHaveBeenCalledWith("task2");
+    expect(deleteTask).toHaveBeenCalledWith("task1");
+    expect(deleteTask).toHaveBeenCalledWith("task2");
+    expect(useTasksStore.getState().tasks.task1).toBeUndefined();
+    expect(useTasksStore.getState().activeTaskId).toBeNull();
+  });
 });

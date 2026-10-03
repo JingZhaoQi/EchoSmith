@@ -1,9 +1,11 @@
 // Output area: header (current task + default-save formats), ASR and corrected text side by side.
-import { useState } from "react";
-import { AlertTriangleIcon, CheckIcon, DownloadIcon, FileTextIcon, GlobeIcon, SparklesIcon } from "lucide-react";
+import { useRef, useState } from "react";
+import { AlertTriangleIcon, CheckIcon, DownloadIcon, FileTextIcon, GlobeIcon, SparklesIcon, XIcon } from "lucide-react";
 
+import { ResizeHandle } from "./ResizeHandle";
 import { TranscriptPanel, type Tone } from "./TranscriptPanel";
 import { Button } from "./ui/button";
+import { isBoolean, isNumber, usePersistentState } from "../hooks/usePersistentState";
 import { useSaveStore } from "../hooks/useSaveStore";
 import { EXPORT_FORMATS, type ExportFormat, type TaskSnapshot } from "../lib/api";
 import { getSourceLabel } from "../lib/constants";
@@ -11,6 +13,8 @@ import { useLocaleStore, useT, type Locale, type Messages } from "../lib/i18n";
 import { taskStatusLabel } from "../lib/taskStatus";
 
 const FORMAT_LABEL: Record<ExportFormat, string> = { txt: "TXT", srt: "SRT", md: "Markdown" };
+const SPLIT_DEFAULT = 50; // ASR column share, percent
+const clampSplit = (percent: number) => Math.round(Math.min(80, Math.max(20, percent)));
 
 function rawColumn(task: TaskSnapshot, t: Messages, locale: Locale): { status: string; tone: Tone; text: string } {
   const asrDone = task.asr_progress >= 1;
@@ -53,6 +57,9 @@ export function TaskView({ task, correctionActive }: TaskViewProps): JSX.Element
   const saveTask = useSaveStore((state) => state.saveTask);
   const saveResult = useSaveStore((state) => (task ? state.results[task.id] : undefined));
   const [saving, setSaving] = useState(false);
+  const [split, setSplit] = usePersistentState("echosmith-output-split", SPLIT_DEFAULT, isNumber);
+  const [correctionClosed, setCorrectionClosed] = usePersistentState("echosmith-correction-closed", false, isBoolean);
+  const columnsRef = useRef<HTMLDivElement | null>(null);
 
   const running = task?.status === "running" || task?.status === "queued";
   const finished = task?.status === "completed" || task?.status === "cancelled";
@@ -69,6 +76,10 @@ export function TaskView({ task, correctionActive }: TaskViewProps): JSX.Element
   const raw = task ? rawColumn(task, t, locale) : { status: t.waitingTask, tone: "default" as Tone, text: "" };
   const corrected = task ? task.correction_enabled : correctionActive;
   const correctedText = task?.correction_enabled ? (task.result_text ?? "") : "";
+  // With correction on in Settings (or a corrected task open) the panel always shows; otherwise it can be closed.
+  const closable = !correctionActive && !task?.correction_enabled;
+  const showCorrection = !closable || !correctionClosed;
+  const iconButton = "inline-flex h-7 w-7 items-center justify-center rounded-lg text-slate-600 transition-colors hover:bg-black/[0.07] dark:text-slate-300 dark:hover:bg-white/[0.09]";
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-4">
@@ -153,41 +164,73 @@ export function TaskView({ task, correctionActive }: TaskViewProps): JSX.Element
         </div>
       )}
 
-      <div className="grid min-h-0 flex-1 grid-rows-2 gap-4 xl:grid-cols-2 xl:grid-rows-1">
-        <TranscriptPanel
-          icon={<FileTextIcon className="h-4 w-4 flex-shrink-0 text-slate-500 dark:text-slate-300" />}
-          title={t.rawTitle}
-          subtitle={t.rawSubtitle}
-          status={raw.status}
-          tone={raw.tone}
-          progress={task ? (task.status === "queued" ? 0 : task.asr_progress) : null}
-          text={raw.text}
-          emptyText={!task ? t.selectOrCreateTask : running ? t.rawEmptyWithTask : ""}
-          live={running}
-          resetKey={task?.id ?? ""}
-        />
-        <TranscriptPanel
-          icon={<SparklesIcon className={`h-4 w-4 flex-shrink-0 ${corrected ? "text-teal-600 dark:text-teal-300" : "text-slate-400"}`} />}
-          title={t.correctedTitle}
-          subtitle={corrected ? t.correctedSubtitleOn : t.correctedSubtitleOff}
-          status={task ? correctedStatus(task, t) : corrected ? t.waitingTask : t.notEnabled}
-          tone={task?.correction_enabled && task.status === "completed" ? "success" : "default"}
-          progress={task?.correction_enabled ? task.correction_progress : null}
-          text={correctedText}
-          emptyText={
-            !corrected
-              ? task
-                ? t.correctionOffForTask
-                : t.correctionDisabledHint
-              : !task
-                ? t.selectOrCreateTask
-                : running
-                  ? t.correctedPending
-                  : t.correctedEmpty
-          }
-          live={running}
-          resetKey={task?.id ?? ""}
-        />
+      <div ref={columnsRef} className="flex min-h-0 flex-1">
+        <div className="min-h-0 min-w-0" style={{ flex: showCorrection ? `0 0 ${split}%` : "1 1 0%" }}>
+          <TranscriptPanel
+            icon={<FileTextIcon className="h-4 w-4 flex-shrink-0 text-slate-500 dark:text-slate-300" />}
+            title={t.rawTitle}
+            subtitle={t.rawSubtitle}
+            status={raw.status}
+            tone={raw.tone}
+            progress={task ? (task.status === "queued" ? 0 : task.asr_progress) : null}
+            text={raw.text}
+            emptyText={!task ? t.selectOrCreateTask : running ? t.rawEmptyWithTask : ""}
+            live={running}
+            resetKey={task?.id ?? ""}
+            actions={
+              !showCorrection && (
+                <button type="button" className={iconButton} title={t.showCorrection} aria-label={t.showCorrection} onClick={() => setCorrectionClosed(false)}>
+                  <SparklesIcon className="h-4 w-4" />
+                </button>
+              )
+            }
+          />
+        </div>
+        {showCorrection && (
+          <>
+            <ResizeHandle
+              label={t.resizeHint}
+              value={split}
+              onDrag={(x) => {
+                const box = columnsRef.current?.getBoundingClientRect();
+                if (box && box.width > 0) setSplit(clampSplit(((x - box.left) / box.width) * 100));
+              }}
+              onStep={(d) => setSplit(clampSplit(split + d * 2))}
+              onReset={() => setSplit(SPLIT_DEFAULT)}
+            />
+            <div className="min-h-0 min-w-0 flex-1">
+              <TranscriptPanel
+                icon={<SparklesIcon className={`h-4 w-4 flex-shrink-0 ${corrected ? "text-teal-600 dark:text-teal-300" : "text-slate-400"}`} />}
+                title={t.correctedTitle}
+                subtitle={corrected ? t.correctedSubtitleOn : t.correctedSubtitleOff}
+                status={task ? correctedStatus(task, t) : corrected ? t.waitingTask : t.notEnabled}
+                tone={task?.correction_enabled && task.status === "completed" ? "success" : "default"}
+                progress={task?.correction_enabled ? task.correction_progress : null}
+                text={correctedText}
+                emptyText={
+                  !corrected
+                    ? task
+                      ? t.correctionOffForTask
+                      : t.correctionDisabledHint
+                    : !task
+                      ? t.selectOrCreateTask
+                      : running
+                        ? t.correctedPending
+                        : t.correctedEmpty
+                }
+                live={running}
+                resetKey={task?.id ?? ""}
+                actions={
+                  closable && (
+                    <button type="button" className={iconButton} title={t.hideCorrection} aria-label={t.hideCorrection} onClick={() => setCorrectionClosed(true)}>
+                      <XIcon className="h-4 w-4" />
+                    </button>
+                  )
+                }
+              />
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

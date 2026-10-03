@@ -8,6 +8,7 @@ import { BatchTaskComposer } from "../components/BatchTaskComposer";
 import { SettingsPanel } from "../components/SettingsPanel";
 import { TaskView } from "../components/TaskView";
 import { UrlTaskComposer } from "../components/UrlTaskComposer";
+import { ResizeHandle } from "../components/ResizeHandle";
 import { Button } from "../components/ui/button";
 import { AuroraBackground } from "../components/ui/aurora-background";
 import { ensureBackendBase, fetchSettings, listTaskSummaries } from "../lib/api";
@@ -15,11 +16,16 @@ import { isActive, useTasksStore } from "../hooks/useTasksStore";
 import { useTaskSubscription } from "../hooks/useTaskSubscription";
 import { useFileDrop } from "../hooks/useFileDrop";
 import { useAutoSave } from "../hooks/useAutoSave";
+import { isNumber, usePersistentState } from "../hooks/usePersistentState";
 import { useLocaleStore, useT } from "../lib/i18n";
 
 const queryClient = new QueryClient();
 const logoUrl = new URL("../../echo_logo.svg", import.meta.url).href;
 const POLL_ACTIVE_MS = 1000;
+const SIDEBAR_DEFAULT = 300;
+const SIDEBAR_MIN = 240;
+const clampSidebar = (width: number) =>
+  Math.round(Math.min(Math.max(width, SIDEBAR_MIN), Math.max(SIDEBAR_MIN, window.innerWidth * 0.5)));
 const POLL_IDLE_MS = 5000;
 
 type SourceTab = "batch" | "url";
@@ -71,6 +77,8 @@ function AppShell(): JSX.Element {
   const [correctionActive, setCorrectionActive] = useState(false);
   const [dropNotice, setDropNotice] = useState<string | null>(null);
   const [sourceTab, setSourceTab] = useState<SourceTab>("batch");
+  const [sidebarWidth, setSidebarWidth] = usePersistentState("echosmith-sidebar-width", SIDEBAR_DEFAULT, isNumber);
+  const sidebarRef = useRef<HTMLElement | null>(null);
   const [systemDark, setSystemDark] = useState(
     () => typeof window !== "undefined" && window.matchMedia("(prefers-color-scheme: dark)").matches
   );
@@ -180,11 +188,18 @@ function AppShell(): JSX.Element {
           </div>
         </header>
 
-        <main className="grid min-h-0 flex-1 grid-cols-[340px_minmax(0,1fr)] gap-4 p-4 xl:grid-cols-[400px_minmax(0,1fr)] xl:gap-5 xl:p-5">
-          <section className="min-h-0">
+        <main className="flex min-h-0 flex-1 gap-2 p-4 xl:p-5">
+          <section ref={sidebarRef} className="min-h-0 flex-shrink-0" style={{ width: sidebarWidth }}>
             <IntakeView tab={sourceTab} setTab={setSourceTab} />
           </section>
-          <section className="min-h-0">
+          <ResizeHandle
+            label={t.resizeHint}
+            value={sidebarWidth}
+            onDrag={(x) => setSidebarWidth(clampSidebar(x - (sidebarRef.current?.getBoundingClientRect().left ?? 0)))}
+            onStep={(d) => setSidebarWidth(clampSidebar(sidebarWidth + d * 16))}
+            onReset={() => setSidebarWidth(SIDEBAR_DEFAULT)}
+          />
+          <section className="min-h-0 min-w-0 flex-1">
             <TaskView task={activeTask} correctionActive={correctionActive} />
           </section>
         </main>

@@ -87,6 +87,33 @@ describe("TaskView without a task", () => {
   });
 });
 
+describe("correction panel close button", () => {
+  beforeEach(() => window.localStorage.clear());
+
+  it("can be closed when correction is off in Settings; ASR then fills the space; can be reopened", async () => {
+    const user = userEvent.setup();
+    render(<TaskView correctionActive={false} task={makeTask("t", "completed", { raw_text: "原文" })} />);
+    await user.click(screen.getByRole("button", { name: "关闭智能纠错栏" }));
+    expect(screen.queryByText("智能纠错结果")).not.toBeInTheDocument();
+    expect(screen.queryByRole("separator")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "显示智能纠错栏" }));
+    expect(screen.getByText("智能纠错结果")).toBeInTheDocument();
+  });
+
+  it("cannot be closed when correction is on in Settings, even if closed before", () => {
+    window.localStorage.setItem("echosmith-correction-closed", "true");
+    render(<TaskView correctionActive task={makeTask("t", "running", { raw_text: "原文" })} />);
+    expect(screen.getByText("智能纠错结果")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "关闭智能纠错栏" })).not.toBeInTheDocument();
+  });
+
+  it("stays visible for a task that has corrected text", () => {
+    window.localStorage.setItem("echosmith-correction-closed", "true");
+    render(<TaskView correctionActive={false} task={makeTask("t", "completed", { correction_enabled: true, result_text: "纠错后" })} />);
+    expect(screen.getByText("纠错后")).toBeInTheDocument();
+  });
+});
+
 describe("exportBaseName", () => {
   it("keeps video titles whole and strips file extensions", () => {
     expect(exportBaseName(makeTask("t", "completed", { source: { type: "url", name: "Dr. Smith: talk 1.2" } }))).toBe("Dr. Smith  talk 1.2");

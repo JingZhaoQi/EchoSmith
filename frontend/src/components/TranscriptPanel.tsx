@@ -23,12 +23,14 @@ interface TranscriptPanelProps {
   live: boolean;
   /** changes when another task is opened */
   resetKey: string;
+  /** extra header buttons (e.g. close / show the other panel) */
+  actions?: ReactNode;
 }
 
 const STICK_PX = 40;
 
 export function TranscriptPanel(props: TranscriptPanelProps): JSX.Element {
-  const { icon, title, subtitle, status, tone, progress, text, emptyText, live, resetKey } = props;
+  const { icon, title, subtitle, status, tone, progress, text, emptyText, live, resetKey, actions } = props;
   const t = useT();
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stick = useRef(live);
@@ -71,6 +73,7 @@ export function TranscriptPanel(props: TranscriptPanelProps): JSX.Element {
         </div>
         <div className="flex flex-shrink-0 items-center gap-2">
           <span className={`status-pill ${pill}`}>{status}</span>
+          {actions}
           <Button
             variant="ghost"
             size="icon"
