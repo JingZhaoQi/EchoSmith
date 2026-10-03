@@ -1,59 +1,109 @@
-// Media workspace UI: task library + source intake + dual transcript panels.
-import { useEffect, useState } from "react";
+// Workspace: sidebar (new task + library) and a results-first main area (task view or intake).
+import { useCallback, useEffect, useRef, useState } from "react";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { MoonIcon, SettingsIcon, SparklesIcon, SunIcon, UploadIcon } from "lucide-react";
 
 import { useTheme } from "../hooks/useTheme";
 import { BatchTaskComposer } from "../components/BatchTaskComposer";
-import { CorrectedPanel } from "../components/CorrectedPanel";
-import { RawTranscriptPanel } from "../components/RawTranscriptPanel";
 import { SettingsPanel } from "../components/SettingsPanel";
 import { TaskLibraryPanel } from "../components/TaskLibraryPanel";
+import { TaskView } from "../components/TaskView";
 import { UrlTaskComposer } from "../components/UrlTaskComposer";
 import { Button } from "../components/ui/button";
-import { MoonIcon, SettingsIcon, SparklesIcon, SunIcon } from "lucide-react";
-import { ensureBackendBase, fetchSettings, listTasks } from "../lib/api";
-import { useTasksStore } from "../hooks/useTasksStore";
-import { useTaskSubscription } from "../hooks/useTaskSubscription";
 import { AuroraBackground } from "../components/ui/aurora-background";
+import { ensureBackendBase, fetchSettings, listTaskSummaries } from "../lib/api";
+import { isActive, useTasksStore } from "../hooks/useTasksStore";
+import { useTaskSubscription } from "../hooks/useTaskSubscription";
+import { useFileDrop } from "../hooks/useFileDrop";
 import { useLocaleStore, useT } from "../lib/i18n";
 
 const queryClient = new QueryClient();
-
-const logoUrl = new URL('../../echo_logo.svg', import.meta.url).href;
+const logoUrl = new URL("../../echo_logo.svg", import.meta.url).href;
+const POLL_ACTIVE_MS = 1000;
+const POLL_IDLE_MS = 5000;
 
 type SourceTab = "batch" | "url";
+
+function IntakeView(): JSX.Element {
+  const t = useT();
+  const [tab, setTab] = useState<SourceTab>("batch");
+  const tabs: Array<{ key: SourceTab; label: string }> = [
+    { key: "batch", label: t.tabBatch },
+    { key: "url", label: t.tabUrl },
+  ];
+  return (
+    <div className="mx-auto flex h-full min-h-0 w-full max-w-2xl flex-col gap-4">
+      <div role="tablist" className="relative flex flex-shrink-0 rounded-2xl border border-white/60 bg-white/40 p-1 shadow-sm dark:border-white/[0.08] dark:bg-white/[0.05]">
+        <div
+          className="absolute bottom-1 top-1 rounded-xl bg-white shadow-sm transition-transform duration-200 ease-out dark:bg-white/[0.10]"
+          style={{ width: "calc(50% - 4px)", transform: tab === "batch" ? "translateX(0)" : "translateX(calc(100% + 8px))" }}
+        />
+        {tabs.map(({ key, label }) => (
+          <button
+            key={key}
+            role="tab"
+            aria-selected={tab === key}
+            onClick={() => setTab(key)}
+            className={`relative z-10 flex-1 rounded-xl px-4 py-2 text-sm font-medium transition-colors duration-200 ${
+              tab === key ? "text-slate-950 dark:text-white" : "text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      {/* both stay mounted: switching tabs never drops a running batch or download */}
+      <div className="min-h-0 flex-1" hidden={tab !== "batch"}>
+        <BatchTaskComposer />
+      </div>
+      <div className="min-h-0 flex-1" hidden={tab !== "url"}>
+        <UrlTaskComposer />
+      </div>
+    </div>
+  );
+}
 
 function AppShell(): JSX.Element {
   const [theme, setTheme] = useTheme();
   const t = useT();
   const locale = useLocaleStore((state) => state.locale);
   const setLocale = useLocaleStore((state) => state.setLocale);
-  const [sourceTab, setSourceTab] = useState<SourceTab>("batch");
   const [showSettings, setShowSettings] = useState(false);
   const [correctionActive, setCorrectionActive] = useState(false);
-  const [systemDark, setSystemDark] = useState(() =>
-    typeof window !== "undefined" && window.matchMedia("(prefers-color-scheme: dark)").matches
+  const [dropNotice, setDropNotice] = useState<string | null>(null);
+  const [systemDark, setSystemDark] = useState(
+    () => typeof window !== "undefined" && window.matchMedia("(prefers-color-scheme: dark)").matches
   );
   const activeTaskId = useTasksStore((state) => state.activeTaskId);
-  const setTasks = useTasksStore((state) => state.setTasks);
-  const setActiveTask = useTasksStore((state) => state.setActiveTask);
-  const tasksQuery = useQuery({
-    queryKey: ["tasks"],
-    queryFn: listTasks
-  });
+  const activeTask = useTasksStore((state) => (state.activeTaskId ? state.tasks[state.activeTaskId] : undefined));
+  const mergeSummaries = useTasksStore((state) => state.mergeSummaries);
+  const anyActive = useTasksStore((state) => Object.values(state.tasks).some(isActive));
   const darkActive = theme === "dark" || (theme === "system" && systemDark);
 
+  const tasksQuery = useQuery({
+    queryKey: ["tasks"],
+    queryFn: listTaskSummaries,
+    refetchInterval: anyActive ? POLL_ACTIVE_MS : POLL_IDLE_MS,
+  });
+
+  const openedOnce = useRef(false);
   useEffect(() => {
-    if (tasksQuery.data) {
-      setTasks(tasksQuery.data);
-      if (!activeTaskId && tasksQuery.data.length > 0) {
-        const running = tasksQuery.data.find((task) => task.status === "running") ?? tasksQuery.data[0];
-        setActiveTask(running.id);
-      }
+    if (!tasksQuery.data) return;
+    mergeSummaries(tasksQuery.data);
+    if (!openedOnce.current) {
+      openedOnce.current = true;
+      const running = tasksQuery.data.find(isActive);
+      if (running) useTasksStore.getState().setActiveTask(running.id);
     }
-  }, [tasksQuery.data, activeTaskId, setTasks, setActiveTask]);
+  }, [tasksQuery.data, mergeSummaries]);
 
   useTaskSubscription(activeTaskId);
+
+  const onRejected = useCallback(() => {
+    setDropNotice(t.unsupportedFormat);
+    setTimeout(() => setDropNotice(null), 3000);
+  }, [t]);
+  const dragging = useFileDrop(onRejected);
 
   useEffect(() => {
     void ensureBackendBase();
@@ -66,17 +116,13 @@ function AppShell(): JSX.Element {
 
   useEffect(() => {
     const media = window.matchMedia("(prefers-color-scheme: dark)");
-    const updateSystemTheme = () => setSystemDark(media.matches);
-    updateSystemTheme();
-    if (media.addEventListener) {
-      media.addEventListener("change", updateSystemTheme);
-      return () => media.removeEventListener("change", updateSystemTheme);
-    }
-    media.addListener(updateSystemTheme);
-    return () => media.removeListener(updateSystemTheme);
+    const update = () => setSystemDark(media.matches);
+    update();
+    media.addEventListener?.("change", update);
+    return () => media.removeEventListener?.("change", update);
   }, []);
 
-  // Refresh correction status on mount and when settings panel closes
+  // Refresh correction status on mount and when the settings panel closes
   useEffect(() => {
     if (!showSettings) {
       fetchSettings()
@@ -87,21 +133,15 @@ function AppShell(): JSX.Element {
 
   return (
     <AuroraBackground className="h-screen">
-      <div className="h-screen flex flex-col overflow-hidden">
+      <div className="flex h-screen flex-col overflow-hidden">
         <header className="glass-toolbar z-50 flex items-center justify-between px-6 py-3">
           <div className="flex min-w-0 items-center gap-3">
-            <img
-              src={logoUrl}
-              alt="EchoSmith logo"
-              className="h-9 w-9 flex-shrink-0"
-            />
+            <img src={logoUrl} alt="EchoSmith logo" className="h-9 w-9 flex-shrink-0" />
             <div className="min-w-0">
               <h1 className="truncate text-base font-semibold tracking-tight text-slate-950 dark:text-white">
                 {locale === "zh" ? "闻见 · EchoSmith" : "EchoSmith"}
               </h1>
-              <p className="truncate text-[11px] text-slate-500 dark:text-slate-400">
-                {t.appSubtitle}
-              </p>
+              <p className="truncate text-[11px] text-slate-500 dark:text-slate-400">{t.appSubtitle}</p>
             </div>
           </div>
 
@@ -138,52 +178,19 @@ function AppShell(): JSX.Element {
           </div>
         </header>
 
-        <main className="grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-y-auto p-4 lg:grid-cols-[260px_minmax(360px,420px)_minmax(0,1fr)] lg:overflow-hidden xl:gap-5 xl:p-5">
-          <section className="min-h-[240px] lg:min-h-0">
-            <TaskLibraryPanel />
-          </section>
-
-          <section className="flex min-h-0 flex-col gap-4 lg:overflow-y-auto">
-            <div className="relative flex flex-shrink-0 rounded-2xl border border-white/60 bg-white/40 p-1 shadow-sm dark:border-white/[0.08] dark:bg-white/[0.05]">
-              <div
-                className="absolute top-1 bottom-1 rounded-xl bg-white shadow-sm transition-transform duration-200 ease-out dark:bg-white/[0.10]"
-                style={{
-                  width: "calc(50% - 4px)",
-                  transform: sourceTab === "batch" ? "translateX(0)" : "translateX(calc(100% + 8px))",
-                }}
-              />
-              {([
-                { key: "batch" as SourceTab, label: t.tabBatch },
-                { key: "url" as SourceTab, label: t.tabUrl },
-              ]).map(({ key, label }) => (
-                <button
-                  key={key}
-                  onClick={() => setSourceTab(key)}
-                  className={`relative z-10 flex-1 rounded-xl px-4 py-2 text-sm font-medium transition-colors duration-200 ${
-                    sourceTab === key
-                      ? "text-slate-950 dark:text-white"
-                      : "text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100"
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-
-            <div className="min-h-0 flex-1">
-              {sourceTab === "batch" ? <BatchTaskComposer /> : <UrlTaskComposer />}
-            </div>
-          </section>
-
-          <section className="grid min-h-[480px] grid-rows-2 gap-4 lg:min-h-0">
-            <div className="min-h-0">
-              <RawTranscriptPanel />
-            </div>
-            <div className="min-h-0">
-              <CorrectedPanel correctionActive={correctionActive} />
-            </div>
-          </section>
+        <main className="grid min-h-0 flex-1 grid-cols-[240px_minmax(0,1fr)] gap-4 p-4 xl:grid-cols-[280px_minmax(0,1fr)] xl:gap-5 xl:p-5">
+          <TaskLibraryPanel />
+          <section className="min-h-0">{activeTask ? <TaskView task={activeTask} /> : <IntakeView />}</section>
         </main>
+
+        {(dragging || dropNotice) && (
+          <div className="pointer-events-none fixed inset-0 z-[90] flex items-center justify-center bg-sky-500/10 backdrop-blur-[2px]">
+            <div className="flex flex-col items-center gap-3 rounded-3xl border-2 border-dashed border-sky-400 bg-white/80 px-12 py-10 text-slate-900 shadow-xl dark:bg-slate-900/80 dark:text-white">
+              <UploadIcon className="h-10 w-10 text-sky-600 dark:text-sky-300" />
+              <span className="text-base font-semibold">{dropNotice ?? t.dropToAdd}</span>
+            </div>
+          </div>
+        )}
 
         {showSettings && (
           <SettingsPanel

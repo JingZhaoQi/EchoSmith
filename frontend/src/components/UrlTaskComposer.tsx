@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 
 import { Button } from "./ui/button";
-import { createTaskFromUrl, downloadMedia } from "../lib/api";
+import { createTaskFromUrl, downloadMedia, errorMessage } from "../lib/api";
 import { useTasksStore } from "../hooks/useTasksStore";
 import { localizeBackendMessage, useLocaleStore, useT, type Messages } from "../lib/i18n";
 
@@ -54,18 +54,20 @@ export function UrlTaskComposer(): JSX.Element {
     mutationFn: async (videoUrl: string) => {
       const taskId = await createTaskFromUrl(videoUrl);
 
+      const now = Date.now() / 1000;
       upsertTask({
         id: taskId,
         status: "queued",
         progress: 0,
-        message: "排队中",
-        result_text: "",
-        segments: [],
+        message: "",
+        phase: "queued",
+        asr_progress: 0,
+        correction_enabled: false,
+        correction_progress: 0,
+        correction_failed_batches: 0,
         source: { type: "url", url: videoUrl, name: videoUrl },
-        error: null,
-        logs: [],
-        created_at: Date.now() / 1000,
-        updated_at: Date.now() / 1000,
+        created_at: now,
+        updated_at: now,
       });
 
       setActiveTask(taskId);
@@ -127,7 +129,7 @@ export function UrlTaskComposer(): JSX.Element {
 
   return (
     <form
-      className="liquid-panel flex h-full min-h-[360px] flex-col gap-5 overflow-y-auto p-5"
+      className="liquid-panel flex h-full min-h-0 flex-col gap-5 overflow-y-auto p-6"
       onSubmit={handleSubmit}
     >
       <div>
@@ -140,13 +142,14 @@ export function UrlTaskComposer(): JSX.Element {
       {/* URL input */}
       <div className="flex flex-col gap-4">
         <div>
-          <label className="mb-2 block text-sm font-medium text-slate-900 dark:text-white">
+          <label htmlFor="video-url" className="mb-2 block text-sm font-medium text-slate-900 dark:text-white">
             {t.videoLink}
           </label>
           <div className="flex gap-2">
             <div className="relative flex-1">
               <LinkIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
               <input
+                id="video-url"
                 type="text"
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
@@ -159,6 +162,7 @@ export function UrlTaskComposer(): JSX.Element {
               onClick={handlePaste}
               className="glass-field rounded-2xl px-3 py-2.5 text-slate-600 transition-colors hover:bg-white/70 dark:text-slate-300 dark:hover:bg-white/[0.10]"
               title={t.pasteFromClipboard}
+              aria-label={t.pasteFromClipboard}
             >
               <ClipboardPasteIcon className="h-4 w-4" />
             </button>
@@ -250,12 +254,12 @@ export function UrlTaskComposer(): JSX.Element {
 
       {mutation.isError && (
         <p className="text-xs text-red-600 dark:text-red-400">
-          {(mutation.error as Error).message || t.createTaskFailed}
+          {errorMessage(mutation.error) || t.createTaskFailed}
         </p>
       )}
       {dlMutation.isError && (
         <p className="text-xs text-red-600 dark:text-red-400">
-          {(dlMutation.error as Error).message || t.downloadFailed}
+          {errorMessage(dlMutation.error) || t.downloadFailed}
         </p>
       )}
 

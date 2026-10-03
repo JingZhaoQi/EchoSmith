@@ -1,45 +1,41 @@
-// WebSocket task subscription hook.
+// Live updates (texts included) for the task open in the main area; reconnects if the socket drops.
 import { useEffect } from "react";
 
-import { connectTaskStream, ensureBackendBase } from "../lib/api";
-import { useTasksStore } from "./useTasksStore";
+import { connectTaskStream, ensureBackendBase, type TaskSnapshot } from "../lib/api";
+import { TERMINAL_STATUSES, useTasksStore } from "./useTasksStore";
+
+const RECONNECT_MS = 1000;
 
 export function useTaskSubscription(taskId: string | null): void {
   const upsertTask = useTasksStore((state) => state.upsertTask);
 
   useEffect(() => {
     if (!taskId) return;
-
     let socket: WebSocket | null = null;
-    let cancelled = false;
+    let closed = false;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    let finished = false;
 
-    ensureBackendBase().then(() => {
-      if (cancelled) return;
-      socket = connectTaskStream(taskId);
-      socket.onopen = () => {
-        console.log("✅ [WebSocket] 连接成功:", taskId);
-      };
-      socket.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        console.log("📨 [WebSocket] 收到更新:", {
-          taskId: data.id,
-          status: data.status,
-          progress: data.progress,
-          message: data.message
-        });
-        upsertTask(data);
-      };
-      socket.onerror = (error) => {
-        console.error("❌ [WebSocket] 连接错误:", error);
-        socket?.close();
-      };
-      socket.onclose = () => {
-        console.log("🔌 [WebSocket] 连接关闭:", taskId);
-      };
-    });
+    const connect = () => {
+      void ensureBackendBase().then(() => {
+        if (closed) return;
+        socket = connectTaskStream(taskId);
+        socket.onmessage = (event) => {
+          const data = JSON.parse(event.data) as TaskSnapshot;
+          finished = TERMINAL_STATUSES.has(data.status);
+          upsertTask(data);
+        };
+        socket.onclose = () => {
+          // the server closes the stream when the task is deleted; a finished task needs no more updates
+          if (!closed && !finished) retry = setTimeout(connect, RECONNECT_MS);
+        };
+      });
+    };
+    connect();
 
     return () => {
-      cancelled = true;
+      closed = true;
+      clearTimeout(retry);
       socket?.close();
     };
   }, [taskId, upsertTask]);

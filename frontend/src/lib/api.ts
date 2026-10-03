@@ -1,6 +1,7 @@
 // REST/WebSocket API helpers for EchoSmith frontend.
 import axios, { AxiosHeaders } from "axios";
 import { backendStatusStore } from "./backendStatus";
+import { getMessages } from "./i18n";
 
 export interface HealthStatus {
   ffmpeg: boolean;
@@ -19,20 +20,34 @@ export interface HealthStatus {
 
 export type TaskStatus = "queued" | "running" | "paused" | "completed" | "failed" | "cancelled";
 
-export interface TaskSnapshot {
+export type TaskPhase = "queued" | "downloading" | "transcribing" | "correcting" | "done";
+
+/** Lightweight task state polled for the library (GET /tasks?summary=true). */
+export interface TaskSummary {
   id: string;
   status: TaskStatus;
   progress: number;
   message: string;
-  result_text?: string | null;
-  raw_text?: string | null;
-  segments: Array<{ index: number; start_ms: number; end_ms: number; text: string }>;
+  phase: TaskPhase;
+  asr_progress: number;
+  correction_enabled: boolean;
+  correction_progress: number;
+  correction_failed_batches: number;
   source: Record<string, unknown>;
   error?: string | null;
-  logs: Array<{ timestamp: number; type: string; message: string; progress?: number }>;
   created_at: number;
   updated_at: number;
 }
+
+/** Live state of one task (websocket / GET /tasks/{id}); texts are absent until loaded. */
+export interface TaskSnapshot extends TaskSummary {
+  result_text?: string | null;
+  raw_text?: string | null;
+  logs?: Array<{ timestamp: number; type: string; message: string; progress?: number }>;
+}
+
+export type ExportFormat = "txt" | "srt" | "md";
+export const EXPORT_FORMATS: ExportFormat[] = ["txt", "srt", "md"];
 
 const baseURL = "/api";
 let backendToken: string | null = null;
@@ -203,6 +218,13 @@ export async function addHotword(word: string): Promise<string[]> {
   return response.data.words;
 }
 
+/** Replace the whole hotword list. */
+export async function importHotwords(words: string[]): Promise<string[]> {
+  await ensureBackendBase();
+  const response = await apiClient.post<{ words: string[] }>("/hotwords/import", { words });
+  return response.data.words;
+}
+
 export async function removeHotword(word: string): Promise<string[]> {
   await ensureBackendBase();
   const response = await apiClient.delete<{ words: string[] }>(
@@ -213,7 +235,7 @@ export async function removeHotword(word: string): Promise<string[]> {
 
 // Settings types
 export interface CorrectionConfig {
-  mode: "none" | "local_3b" | "cloud_api";
+  mode: "none" | "cloud_api";
   api_provider: "doubao" | "openai" | "anthropic" | "deepseek" | "custom";
   api_key: string;
   api_key_set: boolean;
@@ -239,17 +261,6 @@ export interface AppSettings {
   api_usage: ApiUsageStats;
 }
 
-export interface CorrectionModelStatus {
-  exists: boolean;
-  size_mb: number;
-  path: string;
-  downloading: boolean;
-  progress: number;
-  total_mb: number;
-  downloaded_mb: number;
-  error: string;
-}
-
 // Settings API
 export async function fetchSettings(): Promise<AppSettings> {
   await ensureBackendBase();
@@ -266,31 +277,19 @@ export async function updateSettings(settings: {
   return response.data;
 }
 
-export async function fetchCorrectionModelStatus(): Promise<CorrectionModelStatus> {
-  await ensureBackendBase();
-  const response = await apiClient.get<CorrectionModelStatus>("/models/correction/status");
-  return response.data;
-}
-
-export async function triggerCorrectionModelDownload(): Promise<{ status: string }> {
-  await ensureBackendBase();
-  const response = await apiClient.post<{ status: string }>("/models/correction/download");
-  return response.data;
-}
-
 export async function resetApiUsage(): Promise<AppSettings> {
   await ensureBackendBase();
   const response = await apiClient.post<AppSettings>("/settings/reset-usage");
   return response.data;
 }
 
-export async function listTasks(): Promise<TaskSnapshot[]> {
+export async function listTaskSummaries(): Promise<TaskSummary[]> {
   await ensureBackendBase();
-  const response = await apiClient.get<TaskSnapshot[]>("/tasks");
+  const response = await apiClient.get<TaskSummary[]>("/tasks", { params: { summary: true } });
   return response.data;
 }
 
-export async function createTaskFromFile(file: File, language = "zh"): Promise<string> {
+export async function createTaskFromFile(file: File, language = "auto"): Promise<string> {
   await ensureBackendBase();
   const form = new FormData();
   form.append("file", file);
@@ -301,13 +300,13 @@ export async function createTaskFromFile(file: File, language = "zh"): Promise<s
   return response.data.id;
 }
 
-export async function createTaskFromPath(path: string, language = "zh"): Promise<string> {
+export async function createTaskFromPath(path: string, language = "auto"): Promise<string> {
   await ensureBackendBase();
   const response = await apiClient.post<{ id: string }>("/tasks/local", { path, language });
   return response.data.id;
 }
 
-export async function createTaskFromUrl(url: string, language = "zh"): Promise<string> {
+export async function createTaskFromUrl(url: string, language = "auto"): Promise<string> {
   await ensureBackendBase();
   const response = await apiClient.post<{ id: string }>("/tasks/url", { url, language });
   return response.data.id;
@@ -323,9 +322,25 @@ export async function resumeTask(id: string): Promise<void> {
   await apiClient.post(`/tasks/${id}/resume`);
 }
 
+/** Stop a task; it stays in the library with its partial transcript. */
 export async function cancelTask(id: string): Promise<void> {
   await ensureBackendBase();
+  await apiClient.post(`/tasks/${id}/cancel`);
+}
+
+/** Stop (if running) and remove a task from the library. */
+export async function deleteTask(id: string): Promise<void> {
+  await ensureBackendBase();
   await apiClient.delete(`/tasks/${id}`);
+}
+
+/** Human-readable message from an API/network error (prefers the backend's `detail`). */
+export function errorMessage(error: unknown): string {
+  if (axios.isAxiosError(error)) {
+    const detail = (error.response?.data as { detail?: unknown } | undefined)?.detail;
+    if (typeof detail === "string" && detail) return detail;
+  }
+  return error instanceof Error ? error.message : String(error);
 }
 
 export interface DownloadProgress {
@@ -368,12 +383,12 @@ export async function downloadMedia(
   });
 
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `下载失败 (${res.status})`);
+    const detail = await res.json().then((body: { detail?: string }) => body.detail, () => undefined);
+    throw new Error(detail || `${getMessages().downloadFailed} (${res.status})`);
   }
 
   const reader = res.body?.getReader();
-  if (!reader) throw new Error("无法读取下载流");
+  if (!reader) throw new Error(getMessages().downloadFailed);
 
   const decoder = new TextDecoder();
   let buffer = "";
@@ -412,16 +427,13 @@ export async function downloadMedia(
     }
   }
 
-  if (!result) throw new Error("下载完成但未收到结果");
+  if (!result) throw new Error(getMessages().downloadFailed);
   return result;
 }
 
-export async function exportTask(id: string, format: "txt" | "srt" | "json"): Promise<Blob> {
+export async function exportTask(id: string, format: ExportFormat): Promise<Blob> {
   await ensureBackendBase();
-  const response = await apiClient.get(`/tasks/${id}/export`, {
-    params: { format },
-    responseType: format === "json" ? "blob" : "blob"
-  });
+  const response = await apiClient.get(`/tasks/${id}/export`, { params: { format }, responseType: "blob" });
   return response.data;
 }
 
@@ -440,58 +452,37 @@ export function connectTaskStream(taskId: string): WebSocket {
   return new WebSocket(url);
 }
 
-/**
- * Auto-export completed task to the source file directory
- * NOTE: This function requires fs:scope permissions in Tauri capabilities
- */
-export async function autoExportTask(
-  taskId: string,
-  formats: Array<"txt" | "srt" | "json">,
-  sourceFilePath: string
-): Promise<void> {
-  console.log("[autoExportTask] Starting auto-export", { taskId, formats, sourceFilePath });
-
-  try {
-    const { writeFile } = await import("@tauri-apps/plugin-fs");
-    const { dirname, extname, basename, join } = await import("@tauri-apps/api/path");
-    console.log("[autoExportTask] Tauri plugins imported successfully");
-
-    // Get source file directory and base name
-    const sourceDir = await dirname(sourceFilePath);
-    const sourceExt = await extname(sourceFilePath);
-    const sourceBase = await basename(sourceFilePath, sourceExt);
-    console.log("[autoExportTask] Parsed file paths", { sourceDir, sourceExt, sourceBase });
-
-    // Export each format
-    for (const format of formats) {
-      try {
-        console.log(`[autoExportTask] Exporting ${format} for task ${taskId}`);
-        const blob = await exportTask(taskId, format);
-        const arrayBuffer = await blob.arrayBuffer();
-        const uint8Array = new Uint8Array(arrayBuffer);
-
-        // Clean up format string (remove leading dots if any)
-        const cleanFormat = format.startsWith('.') ? format.slice(1) : format;
-        // Clean up base name (remove trailing dots if any)
-        const cleanBase = sourceBase.replace(/\.+$/, '');
-
-        const outputPath = await join(sourceDir, `${cleanBase}.${cleanFormat}`);
-        console.log(`[autoExportTask] Writing to ${outputPath}`, {
-          sourceDir,
-          cleanBase,
-          cleanFormat,
-          fullPath: outputPath
-        });
-        await writeFile(outputPath, uint8Array);
-        console.log(`[autoExportTask] Successfully wrote ${format} file to ${outputPath}`);
-      } catch (error) {
-        console.error(`[autoExportTask] Failed to export ${format} for task ${taskId}:`, error);
-        throw error;
-      }
-    }
-    console.log("[autoExportTask] All exports completed successfully");
-  } catch (error) {
-    console.error("[autoExportTask] Auto-export failed:", error);
-    throw error;
+/** Save next to the source file: "<name>.<format>". Throws on the first failed write. */
+export async function autoExportTask(taskId: string, formats: ExportFormat[], sourceFilePath: string): Promise<void> {
+  const { writeFile } = await import("@tauri-apps/plugin-fs");
+  const { dirname, extname, basename, join } = await import("@tauri-apps/api/path");
+  const sourceDir = await dirname(sourceFilePath);
+  const base = (await basename(sourceFilePath, await extname(sourceFilePath))).replace(/\.+$/, "");
+  for (const format of formats) {
+    const blob = await exportTask(taskId, format);
+    await writeFile(await join(sourceDir, `${base}.${format}`), new Uint8Array(await blob.arrayBuffer()));
   }
+}
+
+export const isTauri = (): boolean => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+/** Ask where to save (desktop) or trigger a browser download; returns false if the user cancelled. */
+export async function saveExport(blob: Blob, fileName: string): Promise<boolean> {
+  if (isTauri()) {
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const { writeFile } = await import("@tauri-apps/plugin-fs");
+    const path = await save({ defaultPath: fileName });
+    if (!path) return false;
+    await writeFile(path, new Uint8Array(await blob.arrayBuffer()));
+    return true;
+  }
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = fileName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000); // revoking synchronously can cancel the download
+  return true;
 }

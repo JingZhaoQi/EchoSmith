@@ -42,7 +42,7 @@ const zh = {
   stopAll: "全部停止",
   clearAll: "清空",
   noTasks: "还没有任务。",
-  noTasksHint: "从中间面板添加本地文件或在线视频。",
+  noTasksHint: "点击「新建任务」，或把音视频文件拖进窗口。",
 
   // Transcript panels
   waitingTask: "等待任务",
@@ -57,7 +57,7 @@ const zh = {
   correcting: "智能纠错中",
   waitingCorrection: "等待纠错开始",
   correctedTitle: "智能纠错结果",
-  correctedSubtitleOn: "大模型纠错文本，批次完成即更新",
+  correctedSubtitleOn: "大模型纠错文本，边转写边流式输出",
   correctedSubtitleOff: "未配置 API Key，导出将使用 ASR 原文",
   correctionDisabledHint: "未启用智能纠错。在「设置」中配置大模型 API Key 后，这里会显示纠错结果。",
   correctedEmpty: "纠错结果会显示在这里。",
@@ -144,6 +144,22 @@ const zh = {
   hotwordsLoaded: (n: number) => `已加载 ${n} 个热词`,
   hotwordsFormatHint: "支持 .txt 文件，每行一个词，或用逗号分隔",
 
+  // Workspace (results-first layout)
+  newTask: "新建任务",
+  downloading: "下载中",
+  stop: "停止",
+  close: "关闭",
+  exportLabel: "导出",
+  exportFailed: "导出失败",
+  srtAfterFinish: "任务结束后可导出字幕",
+  correctionOffForTask: "此任务未开启智能纠错。在「设置」中配置大模型 API Key 后，新任务会边转写边纠错。",
+  correctionFailedBatches: (n: number) => `${n} 批纠错失败，已保留原文`,
+  stopBatch: "停止",
+  clearList: "清空列表",
+  exportErrorPrefix: "自动导出失败：",
+  clearKey: "清除 Key",
+  keyWillBeCleared: "保存后将清除已设置的 Key",
+
   // Error boundary
   appCrashed: "应用出错了",
   errorMessage: "错误信息：",
@@ -188,7 +204,7 @@ const en: Messages = {
   stopAll: "Stop All",
   clearAll: "Clear",
   noTasks: "No tasks yet.",
-  noTasksHint: "Add local files or an online video from the middle panel.",
+  noTasksHint: "Click New Task, or drop audio/video files into the window.",
 
   waitingTask: "No task",
   recognitionFailed: "Recognition failed",
@@ -202,7 +218,7 @@ const en: Messages = {
   correcting: "Correcting",
   waitingCorrection: "Waiting for correction",
   correctedTitle: "Corrected Transcript",
-  correctedSubtitleOn: "LLM-corrected text, updated as each batch finishes",
+  correctedSubtitleOn: "LLM-corrected text, streamed while transcribing",
   correctedSubtitleOff: "No API key configured; exports use the ASR transcript",
   correctionDisabledHint: "Smart correction is off. Configure an LLM API key in Settings to see corrected text here.",
   correctedEmpty: "Corrected text will appear here.",
@@ -286,6 +302,21 @@ const en: Messages = {
   hotwordsLoaded: (n) => `${n} hotword${n === 1 ? "" : "s"} loaded`,
   hotwordsFormatHint: "Supports .txt files, one term per line or comma-separated",
 
+  newTask: "New Task",
+  downloading: "Downloading",
+  stop: "Stop",
+  close: "Close",
+  exportLabel: "Export",
+  exportFailed: "Export failed",
+  srtAfterFinish: "Subtitles are available once the task finishes",
+  correctionOffForTask: "Smart correction was off for this task. Add an LLM API key in Settings and new tasks are corrected while they transcribe.",
+  correctionFailedBatches: (n) => `${n} correction batch${n === 1 ? "" : "es"} failed; raw text kept`,
+  stopBatch: "Stop",
+  clearList: "Clear list",
+  exportErrorPrefix: "Auto-export failed: ",
+  clearKey: "Clear key",
+  keyWillBeCleared: "The saved key will be removed when you save",
+
   appCrashed: "Something went wrong",
   errorMessage: "Error: ",
   reload: "Reload",
@@ -297,6 +328,7 @@ const MESSAGES: Record<Locale, Messages> = { zh, en };
 // for display only (CorrectedPanel still matches the raw "纠错" substring).
 // ponytail: phrase table, move to backend message codes if phrases multiply.
 const BACKEND_PHRASES: Array<[string, string]> = [
+  ["批纠错失败，已保留原文", " correction batches failed; raw text kept"],
   ["智能纠错收尾中", "Finishing correction"],
   ["智能纠错中", "Correcting"],
   ["需要认证，尝试读取浏览器登录状态", "Auth required, reading browser login"],

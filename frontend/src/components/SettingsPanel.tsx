@@ -17,6 +17,8 @@ import {
   updateSettings,
   resetApiUsage,
   fetchHotwords,
+  importHotwords,
+  errorMessage,
   type CorrectionConfig,
   type ApiUsageStats,
 } from "../lib/api";
@@ -51,8 +53,11 @@ export function SettingsPanel({
   const setLocale = useLocaleStore((state) => state.setLocale);
   const [mode, setMode] = useState<CorrectionMode>("none");
   const [provider, setProvider] = useState<ApiProvider>("openai");
-  const [apiKey, setApiKey] = useState("");
+  const [apiKey, setApiKey] = useState(""); // only what the user types; the saved key never enters the input
+  const [maskedKey, setMaskedKey] = useState("");
   const [apiKeySet, setApiKeySet] = useState(false);
+  const [clearKey, setClearKey] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [apiModel, setApiModel] = useState("gpt-4o-mini");
   const [apiBaseUrl, setApiBaseUrl] = useState("");
   const [words, setWords] = useState<string[]>([]);
@@ -74,10 +79,10 @@ export function SettingsPanel({
     fetchSettings()
       .then((s) => {
         const c = s.correction;
-        const m = (c.mode === "local_3b" ? "none" : c.mode) as CorrectionMode;
+        const m = c.mode;
         setMode(m);
         setProvider(c.api_provider);
-        setApiKey(c.api_key);
+        setMaskedKey(c.api_key);
         setApiKeySet(c.api_key_set);
         setApiModel(c.api_model);
         setApiBaseUrl(c.api_base_url);
@@ -90,27 +95,34 @@ export function SettingsPanel({
           apiKeySet: c.api_key_set,
         });
       })
-      .catch(console.error);
+      .catch((e) => setError(errorMessage(e)));
 
-    fetchHotwords().then(setWords).catch(console.error);
+    fetchHotwords().then(setWords).catch((e) => setError(errorMessage(e)));
   }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
 
   // Track dirty state
   useEffect(() => {
     if (!serverState) return;
-    const keyChanged = Boolean(apiKey) && !apiKey.includes("****");
     const changed =
       mode !== serverState.mode ||
       provider !== serverState.provider ||
       apiModel !== serverState.apiModel ||
       apiBaseUrl !== serverState.apiBaseUrl ||
-      keyChanged;
+      apiKey.trim() !== "" ||
+      clearKey;
     setDirty(changed);
-    setSaved(false);
-  }, [mode, provider, apiKey, apiModel, apiBaseUrl, serverState]);
+    if (changed) setSaved(false); // a fresh save also updates serverState; keep its "Saved" note
+  }, [mode, provider, apiKey, clearKey, apiModel, apiBaseUrl, serverState]);
 
   const saveSettings = useCallback(async () => {
     setSaving(true);
+    setError(null);
     try {
       const payload: Partial<CorrectionConfig> = {
         mode,
@@ -118,9 +130,8 @@ export function SettingsPanel({
         api_model: apiModel,
         api_base_url: apiBaseUrl,
       };
-      if (apiKey && !apiKey.includes("****")) {
-        payload.api_key = apiKey;
-      }
+      if (apiKey.trim()) payload.api_key = apiKey.trim();
+      else if (clearKey) payload.api_key = "";
       const result = await updateSettings({
         transcription: {
           asr_model: "sensevoice-sherpa-2024",
@@ -128,10 +139,12 @@ export function SettingsPanel({
         correction: payload,
       });
       const c = result.correction;
-      const newMode = (c.mode === "local_3b" ? "none" : c.mode) as CorrectionMode;
+      const newMode = c.mode;
       setMode(newMode);
       setApiKeySet(c.api_key_set);
-      setApiKey(c.api_key);
+      setMaskedKey(c.api_key);
+      setApiKey("");
+      setClearKey(false);
       setUsage(result.api_usage ?? { total_calls: 0, total_segments: 0, failed_calls: 0 });
       setServerState({
         mode: newMode,
@@ -145,17 +158,17 @@ export function SettingsPanel({
       onSaved?.(newMode !== "none" && c.api_key_set);
       setTimeout(() => setSaved(false), 2000);
     } catch (err) {
-      console.error("保存设置失败:", err);
+      setError(errorMessage(err));
     } finally {
       setSaving(false);
     }
-  }, [mode, provider, apiKey, apiModel, apiBaseUrl, serverState]);
+  }, [mode, provider, apiKey, clearKey, apiModel, apiBaseUrl, onSaved]);
 
   const handleProviderChange = (newProvider: ApiProvider) => {
+    // keep a model name the user typed; replace only the previous provider's default
+    if (!apiModel || apiModel === PROVIDER_DEFAULTS[provider].model) setApiModel(PROVIDER_DEFAULTS[newProvider].model);
+    if (newProvider !== "custom") setApiBaseUrl("");
     setProvider(newProvider);
-    const defaults = PROVIDER_DEFAULTS[newProvider];
-    setApiModel(defaults.model);
-    setApiBaseUrl(defaults.baseUrl);
   };
 
   const handleResetUsage = async () => {
@@ -163,7 +176,7 @@ export function SettingsPanel({
       const result = await resetApiUsage();
       setUsage(result.api_usage);
     } catch (err) {
-      console.error("重置统计失败:", err);
+      setError(errorMessage(err));
     }
   };
 
@@ -171,13 +184,15 @@ export function SettingsPanel({
     <div className="fixed inset-0 z-[100] flex justify-end">
       <div className="absolute inset-0 bg-black/20 backdrop-blur-sm" onClick={onClose} />
 
-      <div className="relative w-full max-w-2xl bg-white dark:bg-zinc-900 border-l border-black/[0.08] dark:border-white/[0.08] shadow-2xl overflow-y-auto animate-slide-in-right">
+      <div role="dialog" aria-modal="true" aria-label={t.settings} className="relative w-full max-w-2xl bg-white dark:bg-zinc-900 border-l border-black/[0.08] dark:border-white/[0.08] shadow-2xl overflow-y-auto animate-slide-in-right">
         <div className="sticky top-0 z-10 flex items-center justify-between px-6 py-4 border-b border-black/[0.08] dark:border-white/[0.08] bg-white/90 dark:bg-zinc-900/90 backdrop-blur-xl">
           <h2 className="text-base font-semibold text-gray-900 dark:text-white">
             {t.settings}
           </h2>
           <button
             onClick={onClose}
+            aria-label={t.close}
+            title={t.close}
             className="p-1.5 rounded-lg hover:bg-black/[0.06] dark:hover:bg-white/[0.06] transition-colors"
           >
             <XIcon className="h-4 w-4" />
@@ -315,14 +330,26 @@ export function SettingsPanel({
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
-                  API Key
-                </label>
+                <div className="mb-1 flex items-center justify-between">
+                  <label htmlFor="api-key" className="block text-xs font-medium text-gray-600 dark:text-gray-400">
+                    API Key
+                  </label>
+                  {apiKeySet && !clearKey && (
+                    <button type="button" onClick={() => { setClearKey(true); setApiKey(""); }} className="text-xs text-gray-500 underline-offset-2 hover:text-red-600 hover:underline">
+                      {t.clearKey}
+                    </button>
+                  )}
+                </div>
                 <input
+                  id="api-key"
                   type="password"
+                  autoComplete="off"
                   value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  placeholder={apiKeySet ? t.apiKeySetPlaceholder : t.apiKeyPlaceholder}
+                  onChange={(e) => {
+                    setApiKey(e.target.value);
+                    setClearKey(false);
+                  }}
+                  placeholder={apiKeySet && !clearKey ? `${maskedKey} · ${t.apiKeySetPlaceholder}` : t.apiKeyPlaceholder}
                   className="w-full rounded-lg border border-black/[0.1] dark:border-white/[0.1] bg-white dark:bg-zinc-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
                 />
               </div>
@@ -376,7 +403,9 @@ export function SettingsPanel({
             {saved && (
               <span className="text-xs text-emerald-600 dark:text-emerald-400">{t.saved}</span>
             )}
-            {!dirty && !saved && serverState && (
+            {error && <span className="text-xs text-red-600 dark:text-red-400">{error}</span>}
+            {clearKey && <span className="text-xs text-amber-600 dark:text-amber-400">{t.keyWillBeCleared}</span>}
+            {!dirty && !saved && !error && serverState && (
               <span className="text-xs text-gray-400">{t.upToDate}</span>
             )}
           </div>
@@ -440,12 +469,9 @@ export function SettingsPanel({
                     const newWords = text.split(/[\n\r,，]+/).map(w => w.trim()).filter(Boolean);
                     if (newWords.length === 0) return;
                     try {
-                      const { apiClient } = await import("../lib/api");
-                      await apiClient.post("/hotwords/import", { words: newWords });
-                      const updated = await fetchHotwords();
-                      setWords(updated);
+                      setWords(await importHotwords(newWords));
                     } catch (err) {
-                      console.error("导入热词失败:", err);
+                      setError(errorMessage(err));
                     }
                   };
                   input.click();

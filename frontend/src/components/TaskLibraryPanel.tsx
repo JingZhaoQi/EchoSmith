@@ -1,4 +1,4 @@
-// Task library: queue and history list with per-task and global controls.
+// Sidebar: new-task entry, task list with per-task pause/resume/remove, stop all and clear.
 import { useMemo, useState } from "react";
 import {
   CheckCircle2Icon,
@@ -9,6 +9,7 @@ import {
   PauseCircleIcon,
   PauseIcon,
   PlayIcon,
+  PlusIcon,
   StopCircleIcon,
   Trash2Icon,
   XCircleIcon,
@@ -16,26 +17,13 @@ import {
 } from "lucide-react";
 
 import { Button } from "./ui/button";
-import { useTasksStore } from "../hooks/useTasksStore";
-import { cancelTask, pauseTask, resumeTask } from "../lib/api";
+import { isActive, useTasksStore } from "../hooks/useTasksStore";
+import { useBatchStore } from "../hooks/useBatchStore";
+import { cancelTask, deleteTask, errorMessage, pauseTask, resumeTask } from "../lib/api";
 import type { TaskSnapshot, TaskStatus } from "../lib/api";
 import { getSourceLabel } from "../lib/constants";
-import { useT, type Messages } from "../lib/i18n";
-import { getStoppableTaskIds } from "./taskControls";
-
-const ACTIVE_STATUSES: TaskStatus[] = ["queued", "running", "paused"];
-
-async function cancelIgnoring404(taskId: string): Promise<void> {
-  try {
-    await cancelTask(taskId);
-  } catch (error: unknown) {
-    const status =
-      typeof error === "object" && error !== null && "response" in error
-        ? (error as { response?: { status?: number } }).response?.status
-        : undefined;
-    if (status !== 404) throw error;
-  }
-}
+import { useLocaleStore, useT, type Messages } from "../lib/i18n";
+import { taskStatusLabel } from "../lib/taskStatus";
 
 function formatRelativeTime(timestamp: number, t: Messages): string {
   const seconds = Math.max(0, Date.now() / 1000 - timestamp);
@@ -77,16 +65,18 @@ function TaskRow({
   onRemove: () => void;
 }): JSX.Element {
   const t = useT();
-  const isUrl = (task.source as Record<string, unknown>).type === "url";
+  const locale = useLocaleStore((state) => state.locale);
+  const isUrl = task.source.type === "url";
   const name = getSourceLabel(task.source, 40) || task.id.slice(0, 8);
-  const progressPct = Math.round((task.progress ?? 0) * 100);
   const isPaused = task.status === "paused";
   const showPauseResume = task.status === "running" || isPaused;
+  const progressPct = Math.round((task.progress ?? 0) * 100);
 
   return (
     <div
       role="button"
       tabIndex={0}
+      aria-current={active ? "true" : undefined}
       onClick={onSelect}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
@@ -102,7 +92,7 @@ function TaskRow({
     >
       <div className="flex items-center gap-2">
         <StatusIcon status={task.status} />
-        <span className="min-w-0 flex-1 truncate text-sm font-medium text-slate-900 dark:text-white">
+        <span className="min-w-0 flex-1 truncate text-sm font-medium text-slate-900 dark:text-white" title={name}>
           {isUrl && <GlobeIcon className="mr-1 inline h-3 w-3 opacity-60" />}
           {name}
         </span>
@@ -138,24 +128,16 @@ function TaskRow({
         </span>
       </div>
       <div className="mt-1.5 flex items-center gap-2 pl-6">
-        <span className="text-[11px] text-slate-500 dark:text-slate-400">
-          {t.status[task.status] ?? task.status}
+        <span className="min-w-0 truncate text-[11px] text-slate-500 dark:text-slate-400">
+          {taskStatusLabel(task, t, locale)}
         </span>
         {task.status === "running" && (
-          <>
-            <div className="h-1 flex-1 overflow-hidden rounded-full bg-slate-900/10 dark:bg-white/10">
-              <div
-                className="h-full rounded-full bg-sky-500 transition-all dark:bg-sky-400"
-                style={{ width: `${progressPct}%` }}
-              />
-            </div>
-            <span className="text-[10px] tabular-nums text-slate-500 dark:text-slate-400">
-              {progressPct}%
-            </span>
-          </>
+          <div className="h-1 flex-1 overflow-hidden rounded-full bg-slate-900/10 dark:bg-white/10">
+            <div className="h-full rounded-full bg-sky-500 transition-all dark:bg-sky-400" style={{ width: `${progressPct}%` }} />
+          </div>
         )}
         {task.status === "failed" && task.error && (
-          <span className="min-w-0 flex-1 truncate text-[11px] text-red-500 dark:text-red-300">
+          <span className="min-w-0 flex-1 truncate text-[11px] text-red-500 dark:text-red-300" title={task.error}>
             {task.error}
           </span>
         )}
@@ -170,99 +152,84 @@ function TaskRow({
 }
 
 export function TaskLibraryPanel(): JSX.Element {
-  const { tasks, activeTaskId, setActiveTask, removeTask, clearAllTasks, resetUserClearedFlag } =
-    useTasksStore((state) => ({
-      tasks: state.tasks,
-      activeTaskId: state.activeTaskId,
-      setActiveTask: state.setActiveTask,
-      removeTask: state.removeTask,
-      clearAllTasks: state.clearAllTasks,
-      resetUserClearedFlag: state.resetUserClearedFlag,
-    }));
-  const [busy, setBusy] = useState(false);
   const t = useT();
+  const tasks = useTasksStore((state) => state.tasks);
+  const activeTaskId = useTasksStore((state) => state.activeTaskId);
+  const setActiveTask = useTasksStore((state) => state.setActiveTask);
+  const removeTask = useTasksStore((state) => state.removeTask);
+  const upsertTask = useTasksStore((state) => state.upsertTask);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const sortedTasks = useMemo(
-    () => Object.values(tasks).sort((a, b) => b.created_at - a.created_at),
-    [tasks]
-  );
-
+  const sortedTasks = useMemo(() => Object.values(tasks).sort((a, b) => b.created_at - a.created_at), [tasks]);
   const counts = useMemo(() => {
     let active = 0;
     let completed = 0;
     let failed = 0;
     for (const task of sortedTasks) {
-      if (ACTIVE_STATUSES.includes(task.status)) active += 1;
+      if (isActive(task)) active += 1;
       else if (task.status === "completed") completed += 1;
       else failed += 1;
     }
     return { active, completed, failed };
   }, [sortedTasks]);
 
-  const stoppableTaskIds = getStoppableTaskIds(tasks);
-  const hasTasks = sortedTasks.length > 0;
-
-  const handlePauseResume = async (task: TaskSnapshot) => {
+  const run = async (action: () => Promise<unknown>) => {
+    setError(null);
     try {
+      await action();
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  };
+
+  const handlePauseResume = (task: TaskSnapshot) =>
+    run(async () => {
       if (task.status === "paused") await resumeTask(task.id);
       else await pauseTask(task.id);
-    } catch (error) {
-      console.error("Failed to pause/resume task:", error);
-      window.alert(t.actionFailed);
-    }
-  };
+      upsertTask({ ...task, status: task.status === "paused" ? "running" : "paused" });
+    });
 
-  const handleRemove = async (task: TaskSnapshot) => {
-    try {
-      await cancelIgnoring404(task.id);
+  const handleRemove = (task: TaskSnapshot) =>
+    run(async () => {
+      await deleteTask(task.id).catch((e: unknown) => {
+        if (!(e && typeof e === "object" && "response" in e && (e as { response?: { status?: number } }).response?.status === 404)) throw e;
+      });
       removeTask(task.id);
-    } catch (error) {
-      console.error("Failed to remove task:", error);
-      window.alert(t.removeFailed);
-    }
-  };
+    });
 
   const handleStopAll = async () => {
     setBusy(true);
-    try {
-      for (const taskId of stoppableTaskIds) {
-        try {
-          await cancelIgnoring404(taskId);
-        } catch (error) {
-          console.error(`Failed to cancel task ${taskId}:`, error);
-        }
-      }
-    } finally {
-      setBusy(false);
-    }
+    useBatchStore.getState().stop();
+    const active = sortedTasks.filter(isActive);
+    await run(() => Promise.all(active.map((task) => cancelTask(task.id).catch(() => undefined))));
+    setBusy(false);
   };
 
   const handleClearAll = async () => {
-    const taskIds = Object.keys(tasks);
     setBusy(true);
-    window.dispatchEvent(new CustomEvent("clearAllFiles"));
-    clearAllTasks();
-    let failed = false;
-    for (const taskId of taskIds) {
-      try {
-        await cancelIgnoring404(taskId);
-      } catch (error) {
-        failed = true;
-        console.error(`Failed to cancel task ${taskId}:`, error);
-      }
-    }
-    if (failed) {
-      window.alert(t.clearPartialFailed);
-      resetUserClearedFlag();
-    }
+    useBatchStore.getState().clear();
+    await run(() =>
+      Promise.all(
+        sortedTasks.map((task) =>
+          deleteTask(task.id)
+            .then(() => removeTask(task.id))
+            .catch(() => undefined)
+        )
+      )
+    );
     setBusy(false);
   };
 
   return (
     <aside className="liquid-panel flex h-full min-h-0 flex-col gap-3 p-4">
+      <Button className="w-full gap-2" onClick={() => setActiveTask(null)} aria-pressed={activeTaskId === null}>
+        <PlusIcon className="h-4 w-4" />
+        {t.newTask}
+      </Button>
       <div>
         <h2 className="text-sm font-semibold text-slate-950 dark:text-white">{t.taskLibrary}</h2>
-        <div className="mt-1.5 flex items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400">
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-2 text-[11px] text-slate-500 dark:text-slate-400">
           <span>{t.countActive(counts.active)}</span>
           <span className="opacity-40">·</span>
           <span>{t.countCompleted(counts.completed)}</span>
@@ -270,27 +237,16 @@ export function TaskLibraryPanel(): JSX.Element {
           <span>{t.countFailed(counts.failed)}</span>
         </div>
         <div className="mt-2.5 grid grid-cols-2 gap-2">
-          <Button
-            variant="secondary"
-            size="sm"
-            className="gap-1.5"
-            disabled={stoppableTaskIds.length === 0 || busy}
-            onClick={handleStopAll}
-          >
+          <Button variant="secondary" size="sm" className="gap-1.5 whitespace-nowrap px-2" disabled={counts.active === 0 || busy} onClick={handleStopAll}>
             <StopCircleIcon className="h-4 w-4" />
             {t.stopAll}
           </Button>
-          <Button
-            variant="secondary"
-            size="sm"
-            className="gap-1.5"
-            disabled={!hasTasks || busy}
-            onClick={handleClearAll}
-          >
+          <Button variant="secondary" size="sm" className="gap-1.5 whitespace-nowrap px-2" disabled={sortedTasks.length === 0 || busy} onClick={handleClearAll}>
             <Trash2Icon className="h-4 w-4" />
             {t.clearAll}
           </Button>
         </div>
+        {error && <p className="mt-2 text-[11px] text-red-500 dark:text-red-300">{error}</p>}
       </div>
 
       <div className="min-h-0 flex-1 space-y-1 overflow-y-auto">
