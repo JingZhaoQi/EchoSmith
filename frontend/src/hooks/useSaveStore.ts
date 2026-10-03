@@ -25,8 +25,8 @@ interface SaveState {
   formats: ExportFormat[];
   results: Record<string, SaveResult>;
   toggleFormat(format: ExportFormat): void;
-  /** Save the task in the lit formats: next to a local source file, else to Downloads. */
-  saveTask(task: TaskSummary): Promise<void>;
+  /** Save the task (in the lit formats, or the given ones): next to a local source file, else to Downloads. */
+  saveTask(task: TaskSummary, formats?: ExportFormat[]): Promise<void>;
 }
 
 function readFormats(): ExportFormat[] {
@@ -65,12 +65,18 @@ export const useSaveStore = create<SaveState>((set, get) => ({
     }
     set({ formats: ordered });
   },
-  saveTask: async (task) => {
+  saveTask: async (task, only) => {
     // SRT needs final cue timings; a task stopped early still has them, a running one does not
     const finished = task.status === "completed" || task.status === "cancelled";
-    const formats = get().formats.filter((f) => f !== "srt" || finished);
+    const formats = (only ?? get().formats).filter((f) => f !== "srt" || finished);
     const base = exportBaseName(task);
-    const record = (result: SaveResult) => set((state) => ({ results: { ...state.results, [task.id]: result } }));
+    // a later single-format save adds to what was already saved for this task
+    const record = (result: SaveResult) =>
+      set((state) => {
+        const before = only ? (state.results[task.id]?.paths ?? []) : [];
+        const paths = [...before.filter((p) => !result.paths.includes(p)), ...result.paths];
+        return { results: { ...state.results, [task.id]: { ...result, paths } } };
+      });
     try {
       const dir = isTauri() ? await targetDir(task) : null;
       if (dir) {

@@ -51,3 +51,14 @@ describe("default save formats", () => {
     expect(useSaveStore.getState().results.t).toEqual({ paths: [], error: "forbidden path" });
   });
 });
+
+describe("saving one more format later", () => {
+  it("adds the new file to what was saved before", async () => {
+    useSaveStore.setState({ formats: ["txt"], results: {} });
+    const task = makeTask("t", "completed", { source: { type: "local", name: "a.m4a", path: "/x/a.m4a" } });
+    await useSaveStore.getState().saveTask(task);
+    await useSaveStore.getState().saveTask(task, ["srt"]);
+    expect(saveTaskFiles).toHaveBeenLastCalledWith("t", ["srt"], "/x", "a");
+    expect(useSaveStore.getState().results.t.paths).toEqual(["/x/a.txt", "/x/a.srt"]);
+  });
+});

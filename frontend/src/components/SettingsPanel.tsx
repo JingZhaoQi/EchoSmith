@@ -21,9 +21,17 @@ import {
 } from "../lib/api";
 import { useLocaleStore, useT } from "../lib/i18n";
 
+export interface CorrectionState {
+  /** correction mode is on (the corrected panel is shown) */
+  on: boolean;
+  /** on and usable (API key set): new tasks will be corrected */
+  ready: boolean;
+}
+
 interface SettingsPanelProps {
   onClose: () => void;
-  onSaved?: (active: boolean) => void;
+  /** called after every save with the correction state the app depends on */
+  onSaved?: (correction: CorrectionState) => void;
   theme: "light" | "dark" | "system";
   onThemeChange: (theme: "light" | "dark" | "system") => void;
 }
@@ -96,7 +104,7 @@ export function SettingsPanel({
         setApiKeySet(c.api_key_set);
         setMaskedKey(c.api_key);
         setUsage(result.api_usage ?? { total_calls: 0, total_segments: 0, failed_calls: 0 });
-        onSaved?.(c.mode !== "none" && c.api_key_set);
+        onSaved?.({ on: c.mode !== "none", ready: c.mode !== "none" && c.api_key_set });
         setSaveState("saved");
         clearTimeout(savedTimer.current);
         savedTimer.current = setTimeout(() => setSaveState("idle"), 1500);

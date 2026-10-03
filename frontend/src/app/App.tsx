@@ -5,7 +5,7 @@ import { MoonIcon, SettingsIcon, SparklesIcon, SunIcon, UploadIcon } from "lucid
 
 import { useTheme } from "../hooks/useTheme";
 import { BatchTaskComposer } from "../components/BatchTaskComposer";
-import { SettingsPanel } from "../components/SettingsPanel";
+import { SettingsPanel, type CorrectionState } from "../components/SettingsPanel";
 import { TaskView } from "../components/TaskView";
 import { UrlTaskComposer } from "../components/UrlTaskComposer";
 import { ResizeHandle } from "../components/ResizeHandle";
@@ -74,7 +74,7 @@ function AppShell(): JSX.Element {
   const locale = useLocaleStore((state) => state.locale);
   const setLocale = useLocaleStore((state) => state.setLocale);
   const [showSettings, setShowSettings] = useState(false);
-  const [correctionActive, setCorrectionActive] = useState(false);
+  const [correction, setCorrection] = useState<CorrectionState>({ on: false, ready: false });
   const [dropNotice, setDropNotice] = useState<string | null>(null);
   const [sourceTab, setSourceTab] = useState<SourceTab>("batch");
   const [sidebarWidth, setSidebarWidth] = usePersistentState("echosmith-sidebar-width", SIDEBAR_DEFAULT, isNumber);
@@ -136,7 +136,10 @@ function AppShell(): JSX.Element {
   useEffect(() => {
     if (!showSettings) {
       fetchSettings()
-        .then((s) => setCorrectionActive(s.correction.mode !== "none" && s.correction.api_key_set))
+        .then((s) => {
+          const on = s.correction.mode !== "none";
+          setCorrection({ on, ready: on && s.correction.api_key_set });
+        })
         .catch(() => {});
     }
   }, [showSettings]);
@@ -178,11 +181,11 @@ function AppShell(): JSX.Element {
             <Button
               variant="secondary"
               size="sm"
-              className={`gap-1.5 ${correctionActive ? "status-pill-success border-emerald-500/20" : ""}`}
+              className={`gap-1.5 ${correction.ready ? "status-pill-success border-emerald-500/20" : ""}`}
               onClick={() => setShowSettings(!showSettings)}
               title={t.openSettings}
             >
-              {correctionActive ? <SparklesIcon className="h-4 w-4" /> : <SettingsIcon className="h-4 w-4" />}
+              {correction.ready ? <SparklesIcon className="h-4 w-4" /> : <SettingsIcon className="h-4 w-4" />}
               {t.settings}
             </Button>
           </div>
@@ -200,7 +203,7 @@ function AppShell(): JSX.Element {
             onReset={() => setSidebarWidth(SIDEBAR_DEFAULT)}
           />
           <section className="min-h-0 min-w-0 flex-1">
-            <TaskView task={activeTask} correctionActive={correctionActive} />
+            <TaskView task={activeTask} correctionOn={correction.on} correctionActive={correction.ready} />
           </section>
         </main>
 
@@ -216,7 +219,7 @@ function AppShell(): JSX.Element {
         {showSettings && (
           <SettingsPanel
             onClose={() => setShowSettings(false)}
-            onSaved={(active) => setCorrectionActive(active)}
+            onSaved={setCorrection}
             theme={theme}
             onThemeChange={setTheme}
           />

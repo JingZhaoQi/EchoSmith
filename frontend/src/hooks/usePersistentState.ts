@@ -21,4 +21,3 @@ export function usePersistentState<T>(key: string, initial: T, valid: (value: un
 }
 
 export const isNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
-export const isBoolean = (value: unknown): value is boolean => typeof value === "boolean";

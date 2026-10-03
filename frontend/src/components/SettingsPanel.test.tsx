@@ -37,7 +37,7 @@ describe("SettingsPanel saves as you go", () => {
     await screen.findByDisplayValue("deepseek-v4-flash");
     await user.click(screen.getByLabelText(/关闭/, { selector: "input" }));
     expect(updateSettings).toHaveBeenCalledWith({ correction: { mode: "none" } });
-    await waitFor(() => expect(onSaved).toHaveBeenLastCalledWith(false));
+    await waitFor(() => expect(onSaved).toHaveBeenLastCalledWith({ on: false, ready: false }));
     expect(await screen.findByText("已保存")).toBeInTheDocument();
   });
 

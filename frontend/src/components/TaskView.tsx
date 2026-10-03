@@ -1,11 +1,10 @@
 // Output area: header (current task + default-save formats), ASR and corrected text side by side.
-import { useRef, useState } from "react";
-import { AlertTriangleIcon, CheckIcon, DownloadIcon, FileTextIcon, GlobeIcon, SparklesIcon, XIcon } from "lucide-react";
+import { useRef } from "react";
+import { AlertTriangleIcon, CheckIcon, FileTextIcon, GlobeIcon, SparklesIcon } from "lucide-react";
 
 import { ResizeHandle } from "./ResizeHandle";
 import { TranscriptPanel, type Tone } from "./TranscriptPanel";
-import { Button } from "./ui/button";
-import { isBoolean, isNumber, usePersistentState } from "../hooks/usePersistentState";
+import { isNumber, usePersistentState } from "../hooks/usePersistentState";
 import { useSaveStore } from "../hooks/useSaveStore";
 import { EXPORT_FORMATS, type ExportFormat, type TaskSnapshot } from "../lib/api";
 import { getSourceLabel } from "../lib/constants";
@@ -45,41 +44,35 @@ function correctedStatus(task: TaskSnapshot, t: Messages): string {
 interface TaskViewProps {
   /** absent until a task is started or picked in the list */
   task?: TaskSnapshot;
-  /** whether new tasks will be corrected (shown before any task exists) */
+  /** correction mode is on in Settings: the corrected panel is shown only then */
+  correctionOn: boolean;
+  /** correction is on and usable (API key set): new tasks will be corrected */
   correctionActive: boolean;
 }
 
-export function TaskView({ task, correctionActive }: TaskViewProps): JSX.Element {
+export function TaskView({ task, correctionOn, correctionActive }: TaskViewProps): JSX.Element {
   const t = useT();
   const locale = useLocaleStore((state) => state.locale);
   const formats = useSaveStore((state) => state.formats);
   const toggleFormat = useSaveStore((state) => state.toggleFormat);
   const saveTask = useSaveStore((state) => state.saveTask);
   const saveResult = useSaveStore((state) => (task ? state.results[task.id] : undefined));
-  const [saving, setSaving] = useState(false);
   const [split, setSplit] = usePersistentState("echosmith-output-split", SPLIT_DEFAULT, isNumber);
-  const [correctionClosed, setCorrectionClosed] = usePersistentState("echosmith-correction-closed", false, isBoolean);
   const columnsRef = useRef<HTMLDivElement | null>(null);
 
   const running = task?.status === "running" || task?.status === "queued";
   const finished = task?.status === "completed" || task?.status === "cancelled";
-  const canSave =
-    Boolean(task?.result_text || task?.raw_text) && (finished || task?.status === "paused" || task?.status === "failed");
-
-  const handleSave = async () => {
-    if (!task) return;
-    setSaving(true);
-    await saveTask(task);
-    setSaving(false);
+  // Lighting a format also saves it for a task that has already finished (it missed the auto-save).
+  const handleToggle = (format: ExportFormat) => {
+    const lighting = !formats.includes(format);
+    toggleFormat(format);
+    if (lighting && task && finished) void saveTask(task, [format]);
   };
 
   const raw = task ? rawColumn(task, t, locale) : { status: t.waitingTask, tone: "default" as Tone, text: "" };
   const corrected = task ? task.correction_enabled : correctionActive;
   const correctedText = task?.correction_enabled ? (task.result_text ?? "") : "";
-  // With correction on in Settings (or a corrected task open) the panel always shows; otherwise it can be closed.
-  const closable = !correctionActive && !task?.correction_enabled;
-  const showCorrection = !closable || !correctionClosed;
-  const iconButton = "inline-flex h-7 w-7 items-center justify-center rounded-lg text-slate-600 transition-colors hover:bg-black/[0.07] dark:text-slate-300 dark:hover:bg-white/[0.09]";
+  const showCorrection = correctionOn;
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-4">
@@ -124,7 +117,7 @@ export function TaskView({ task, correctionActive }: TaskViewProps): JSX.Element
                   type="button"
                   aria-pressed={lit}
                   title={lit && formats.length === 1 ? t.keepOneFormat : t.defaultSaveHint}
-                  onClick={() => toggleFormat(format)}
+                  onClick={() => handleToggle(format)}
                   className={`inline-flex h-8 items-center gap-1.5 rounded-xl px-3 text-sm font-medium transition-all ${
                     lit
                       ? "bg-slate-950 text-white shadow-sm dark:bg-white dark:text-slate-950"
@@ -137,14 +130,6 @@ export function TaskView({ task, correctionActive }: TaskViewProps): JSX.Element
               );
             })}
           </div>
-          <Button variant="secondary" size="sm" className="gap-1.5" disabled={!canSave || saving} onClick={() => void handleSave()}>
-            {saving ? (
-              <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
-            ) : (
-              <DownloadIcon className="h-3.5 w-3.5" />
-            )}
-            {t.saveNow}
-          </Button>
         </div>
         {saveResult && (
           <p
@@ -177,13 +162,6 @@ export function TaskView({ task, correctionActive }: TaskViewProps): JSX.Element
             emptyText={!task ? t.selectOrCreateTask : running ? t.rawEmptyWithTask : ""}
             live={running}
             resetKey={task?.id ?? ""}
-            actions={
-              !showCorrection && (
-                <button type="button" className={iconButton} title={t.showCorrection} aria-label={t.showCorrection} onClick={() => setCorrectionClosed(false)}>
-                  <SparklesIcon className="h-4 w-4" />
-                </button>
-              )
-            }
           />
         </div>
         {showCorrection && (
@@ -220,13 +198,6 @@ export function TaskView({ task, correctionActive }: TaskViewProps): JSX.Element
                 }
                 live={running}
                 resetKey={task?.id ?? ""}
-                actions={
-                  closable && (
-                    <button type="button" className={iconButton} title={t.hideCorrection} aria-label={t.hideCorrection} onClick={() => setCorrectionClosed(true)}>
-                      <XIcon className="h-4 w-4" />
-                    </button>
-                  )
-                }
               />
             </div>
           </>

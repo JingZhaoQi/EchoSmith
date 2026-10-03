@@ -17,14 +17,14 @@ describe("TaskView", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it("shows raw and corrected text side by side for a corrected task", () => {
-    render(<TaskView correctionActive task={makeTask("t", "completed", { correction_enabled: true, raw_text: "于月结以前", result_text: "逾越节以前", correction_progress: 1 })} />);
+    render(<TaskView correctionOn correctionActive task={makeTask("t", "completed", { correction_enabled: true, raw_text: "于月结以前", result_text: "逾越节以前", correction_progress: 1 })} />);
     expect(screen.getByText("于月结以前")).toBeInTheDocument();
     expect(screen.getByText("逾越节以前")).toBeInTheDocument();
     expect(screen.getByText("智能纠错完成")).toBeInTheDocument();
   });
 
   it("uses the task's own correction flag, not the global setting", () => {
-    render(<TaskView correctionActive task={makeTask("t", "completed", { correction_enabled: false, raw_text: "原文", result_text: "原文" })} />);
+    render(<TaskView correctionOn correctionActive task={makeTask("t", "completed", { correction_enabled: false, raw_text: "原文", result_text: "原文" })} />);
     expect(screen.getByText(/此任务未开启智能纠错/)).toBeInTheDocument();
     expect(screen.getAllByText("原文")).toHaveLength(1);
   });
@@ -32,6 +32,7 @@ describe("TaskView", () => {
   it("streams: corrected status follows correction progress while transcribing", () => {
     render(
       <TaskView
+        correctionOn
         correctionActive
         task={makeTask("t", "running", { correction_enabled: true, raw_text: "原文……", result_text: "纠错前缀", asr_progress: 0.6, correction_progress: 0.3 })}
       />
@@ -43,7 +44,7 @@ describe("TaskView", () => {
   it("format buttons are lit/unlit default-save toggles", async () => {
     const user = userEvent.setup();
     useSaveStore.setState({ formats: ["txt"], results: {} });
-    render(<TaskView correctionActive task={makeTask("t", "completed", { raw_text: "原文" })} />);
+    render(<TaskView correctionOn correctionActive task={makeTask("t", "completed", { raw_text: "原文" })} />);
     expect(screen.getByRole("button", { name: /TXT/ })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /Markdown/ })).toHaveAttribute("aria-pressed", "false");
     await user.click(screen.getByRole("button", { name: /Markdown/ }));
@@ -52,26 +53,30 @@ describe("TaskView", () => {
     expect(saveTaskFiles).not.toHaveBeenCalled(); // toggling never saves by itself
   });
 
-  it("Save writes the lit formats now, and is unavailable while the task runs", async () => {
+  it("lighting a format saves just that format for a finished task, not for a running one", async () => {
     const user = userEvent.setup();
     const saveTask = vi.fn(async () => undefined);
-    useSaveStore.setState({ formats: ["txt", "md"], results: {}, saveTask });
-    const task = makeTask("t", "completed", { raw_text: "原文" });
-    const { rerender } = render(<TaskView correctionActive task={makeTask("t", "running", { raw_text: "原文" })} />);
-    expect(screen.getByRole("button", { name: /^保存$/ })).toBeDisabled();
-    rerender(<TaskView correctionActive task={task} />);
-    await user.click(screen.getByRole("button", { name: /^保存$/ }));
-    expect(saveTask).toHaveBeenCalledWith(task);
+    useSaveStore.setState({ formats: ["txt"], results: {}, saveTask });
+    const done = makeTask("t", "completed", { raw_text: "原文" });
+    const { rerender } = render(<TaskView correctionOn correctionActive task={makeTask("t", "running", { raw_text: "原文" })} />);
+    await user.click(screen.getByRole("button", { name: /Markdown/ }));
+    expect(saveTask).not.toHaveBeenCalled(); // it will be saved when it finishes
+    rerender(<TaskView correctionOn correctionActive task={done} />);
+    await user.click(screen.getByRole("button", { name: /SRT/ }));
+    expect(saveTask).toHaveBeenCalledWith(done, ["srt"]);
+    await user.click(screen.getByRole("button", { name: /SRT/ })); // turning off saves nothing
+    expect(saveTask).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: /^保存$/ })).not.toBeInTheDocument();
   });
 
   it("shows where the files were saved", () => {
     useSaveStore.setState({ formats: ["txt"], results: { t: { paths: ["/x/讲道.txt", "/x/讲道.md"] } } });
-    render(<TaskView correctionActive task={makeTask("t", "completed", { raw_text: "原文" })} />);
+    render(<TaskView correctionOn correctionActive task={makeTask("t", "completed", { raw_text: "原文" })} />);
     expect(screen.getByText("已保存：讲道.txt, 讲道.md")).toBeInTheDocument();
   });
 
   it("warns when some correction batches fell back to raw text", () => {
-    render(<TaskView correctionActive task={makeTask("t", "completed", { correction_enabled: true, correction_failed_batches: 2, result_text: "x" })} />);
+    render(<TaskView correctionOn correctionActive task={makeTask("t", "completed", { correction_enabled: true, correction_failed_batches: 2, result_text: "x" })} />);
     expect(screen.getByText("2 批纠错失败，已保留原文")).toBeInTheDocument();
   });
 });
@@ -79,38 +84,26 @@ describe("TaskView", () => {
 describe("TaskView without a task", () => {
   it("still offers the default-save toggles and explains what to do", () => {
     useSaveStore.setState({ formats: ["txt"], results: {} });
-    render(<TaskView correctionActive={false} />);
+    render(<TaskView correctionOn={false} correctionActive={false} />);
     expect(screen.getAllByText(/在左侧添加文件或粘贴链接开始转写/).length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: /TXT/ })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: /^保存$/ })).toBeDisabled();
-    expect(screen.getByText(/未启用智能纠错/)).toBeInTheDocument();
+    expect(screen.queryByText("智能纠错结果")).not.toBeInTheDocument(); // correction mode is off
   });
 });
 
-describe("correction panel close button", () => {
-  beforeEach(() => window.localStorage.clear());
-
-  it("can be closed when correction is off in Settings; ASR then fills the space; can be reopened", async () => {
-    const user = userEvent.setup();
-    render(<TaskView correctionActive={false} task={makeTask("t", "completed", { raw_text: "原文" })} />);
-    await user.click(screen.getByRole("button", { name: "关闭智能纠错栏" }));
+describe("correction panel follows the correction mode", () => {
+  it("is hidden when correction is off: ASR fills the space, no divider, no close button", () => {
+    render(<TaskView correctionOn={false} correctionActive={false} task={makeTask("t", "completed", { raw_text: "原文" })} />);
     expect(screen.queryByText("智能纠错结果")).not.toBeInTheDocument();
     expect(screen.queryByRole("separator")).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "显示智能纠错栏" }));
-    expect(screen.getByText("智能纠错结果")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /智能纠错栏/ })).not.toBeInTheDocument();
   });
 
-  it("cannot be closed when correction is on in Settings, even if closed before", () => {
-    window.localStorage.setItem("echosmith-correction-closed", "true");
-    render(<TaskView correctionActive task={makeTask("t", "running", { raw_text: "原文" })} />);
+  it("is shown when correction is on, without a close button, even before the API key is set", () => {
+    render(<TaskView correctionOn correctionActive={false} task={makeTask("t", "running", { raw_text: "原文" })} />);
     expect(screen.getByText("智能纠错结果")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "关闭智能纠错栏" })).not.toBeInTheDocument();
-  });
-
-  it("stays visible for a task that has corrected text", () => {
-    window.localStorage.setItem("echosmith-correction-closed", "true");
-    render(<TaskView correctionActive={false} task={makeTask("t", "completed", { correction_enabled: true, result_text: "纠错后" })} />);
-    expect(screen.getByText("纠错后")).toBeInTheDocument();
+    expect(screen.getByRole("separator")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /智能纠错栏/ })).not.toBeInTheDocument();
   });
 });
 
