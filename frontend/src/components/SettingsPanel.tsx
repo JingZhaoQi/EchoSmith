@@ -1,10 +1,11 @@
-import { useEffect, useState, useCallback } from "react";
+// Settings drawer: every change is saved right away (text fields after a short pause or on leaving the field).
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  CheckIcon,
   XIcon,
   LoaderIcon,
   UploadIcon,
   FileTextIcon,
-  SaveIcon,
   RotateCcwIcon,
   SunIcon,
   MoonIcon,
@@ -34,6 +35,9 @@ interface SettingsPanelProps {
 type CorrectionMode = "none" | "cloud_api";
 type ApiProvider = CorrectionConfig["api_provider"];
 
+const TYPING_SAVE_DELAY_MS = 600;
+type SaveState = "idle" | "saving" | "saved";
+
 const PROVIDER_DEFAULTS: Record<ApiProvider, { model: string; baseUrl: string }> = {
   doubao: { model: "doubao-seed-2-0-lite-260215", baseUrl: "" },
   openai: { model: "gpt-4o-mini", baseUrl: "" },
@@ -56,119 +60,103 @@ export function SettingsPanel({
   const [apiKey, setApiKey] = useState(""); // only what the user types; the saved key never enters the input
   const [maskedKey, setMaskedKey] = useState("");
   const [apiKeySet, setApiKeySet] = useState(false);
-  const [clearKey, setClearKey] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [apiModel, setApiModel] = useState("gpt-4o-mini");
   const [apiBaseUrl, setApiBaseUrl] = useState("");
   const [words, setWords] = useState<string[]>([]);
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const [dirty, setDirty] = useState(false);
+  const [saveState, setSaveState] = useState<SaveState>("idle");
   const [usage, setUsage] = useState<ApiUsageStats>({ total_calls: 0, total_segments: 0, failed_calls: 0 });
-
-  // Load initial state from the server
-  const [serverState, setServerState] = useState<{
-    mode: CorrectionMode;
-    provider: ApiProvider;
-    apiModel: string;
-    apiBaseUrl: string;
-    apiKeySet: boolean;
-  } | null>(null);
+  const pending = useRef<Partial<CorrectionConfig>>({}); // typed edits not yet saved
+  const typingTimer = useRef<ReturnType<typeof setTimeout>>();
+  const savedTimer = useRef<ReturnType<typeof setTimeout>>();
 
   useEffect(() => {
     fetchSettings()
       .then((s) => {
         const c = s.correction;
-        const m = c.mode;
-        setMode(m);
+        setMode(c.mode);
         setProvider(c.api_provider);
         setMaskedKey(c.api_key);
         setApiKeySet(c.api_key_set);
         setApiModel(c.api_model);
         setApiBaseUrl(c.api_base_url);
         setUsage(s.api_usage ?? { total_calls: 0, total_segments: 0, failed_calls: 0 });
-        setServerState({
-          mode: m,
-          provider: c.api_provider,
-          apiModel: c.api_model,
-          apiBaseUrl: c.api_base_url,
-          apiKeySet: c.api_key_set,
-        });
       })
       .catch((e) => setError(errorMessage(e)));
 
     fetchHotwords().then(setWords).catch((e) => setError(errorMessage(e)));
+    return () => {
+      clearTimeout(typingTimer.current);
+      clearTimeout(savedTimer.current);
+    };
   }, []);
 
+  /** Send only the changed fields; the server echoes the full settings back. */
+  const save = useCallback(
+    async (changes: Partial<CorrectionConfig>) => {
+      setSaveState("saving");
+      setError(null);
+      try {
+        const result = await updateSettings({ correction: changes });
+        const c = result.correction;
+        setApiKeySet(c.api_key_set);
+        setMaskedKey(c.api_key);
+        setUsage(result.api_usage ?? { total_calls: 0, total_segments: 0, failed_calls: 0 });
+        onSaved?.(c.mode !== "none" && c.api_key_set);
+        setSaveState("saved");
+        clearTimeout(savedTimer.current);
+        savedTimer.current = setTimeout(() => setSaveState("idle"), 1500);
+      } catch (err) {
+        setSaveState("idle");
+        setError(errorMessage(err));
+      }
+    },
+    [onSaved]
+  );
+
+  /** Save typed edits now (pause in typing, leaving a field, closing the panel). */
+  const flush = useCallback(async () => {
+    clearTimeout(typingTimer.current);
+    const changes = pending.current;
+    pending.current = {};
+    if (Object.keys(changes).length) await save(changes);
+  }, [save]);
+
+  const edit = (changes: Partial<CorrectionConfig>, immediate = false) => {
+    pending.current = { ...pending.current, ...changes };
+    clearTimeout(typingTimer.current);
+    if (immediate) void flush();
+    else typingTimer.current = setTimeout(() => void flush(), TYPING_SAVE_DELAY_MS);
+  };
+
+  const commitKey = () => {
+    const key = apiKey.trim();
+    if (!key) return;
+    setApiKey("");
+    edit({ api_key: key }, true);
+  };
+
+  const close = useCallback(() => {
+    // the key is saved on leaving its field; closing also counts as leaving
+    const key = apiKey.trim();
+    if (key) pending.current = { ...pending.current, api_key: key };
+    void flush().finally(onClose);
+  }, [apiKey, flush, onClose]);
+
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && close();
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
-  // Track dirty state
-  useEffect(() => {
-    if (!serverState) return;
-    const changed =
-      mode !== serverState.mode ||
-      provider !== serverState.provider ||
-      apiModel !== serverState.apiModel ||
-      apiBaseUrl !== serverState.apiBaseUrl ||
-      apiKey.trim() !== "" ||
-      clearKey;
-    setDirty(changed);
-    if (changed) setSaved(false); // a fresh save also updates serverState; keep its "Saved" note
-  }, [mode, provider, apiKey, clearKey, apiModel, apiBaseUrl, serverState]);
-
-  const saveSettings = useCallback(async () => {
-    setSaving(true);
-    setError(null);
-    try {
-      const payload: Partial<CorrectionConfig> = {
-        mode,
-        api_provider: provider,
-        api_model: apiModel,
-        api_base_url: apiBaseUrl,
-      };
-      if (apiKey.trim()) payload.api_key = apiKey.trim();
-      else if (clearKey) payload.api_key = "";
-      const result = await updateSettings({
-        transcription: {
-          asr_model: "sensevoice-sherpa-2024",
-        },
-        correction: payload,
-      });
-      const c = result.correction;
-      const newMode = c.mode;
-      setMode(newMode);
-      setApiKeySet(c.api_key_set);
-      setMaskedKey(c.api_key);
-      setApiKey("");
-      setClearKey(false);
-      setUsage(result.api_usage ?? { total_calls: 0, total_segments: 0, failed_calls: 0 });
-      setServerState({
-        mode: newMode,
-        provider: c.api_provider,
-        apiModel: c.api_model,
-        apiBaseUrl: c.api_base_url,
-        apiKeySet: c.api_key_set,
-      });
-      setDirty(false);
-      setSaved(true);
-      onSaved?.(newMode !== "none" && c.api_key_set);
-      setTimeout(() => setSaved(false), 2000);
-    } catch (err) {
-      setError(errorMessage(err));
-    } finally {
-      setSaving(false);
-    }
-  }, [mode, provider, apiKey, clearKey, apiModel, apiBaseUrl, onSaved]);
+  }, [close]);
 
   const handleProviderChange = (newProvider: ApiProvider) => {
     // keep a model name the user typed; replace only the previous provider's default
-    if (!apiModel || apiModel === PROVIDER_DEFAULTS[provider].model) setApiModel(PROVIDER_DEFAULTS[newProvider].model);
-    if (newProvider !== "custom") setApiBaseUrl("");
+    const model = !apiModel || apiModel === PROVIDER_DEFAULTS[provider].model ? PROVIDER_DEFAULTS[newProvider].model : apiModel;
+    const baseUrl = newProvider === "custom" ? apiBaseUrl : "";
     setProvider(newProvider);
+    setApiModel(model);
+    setApiBaseUrl(baseUrl);
+    edit({ api_provider: newProvider, api_model: model, api_base_url: baseUrl }, true);
   };
 
   const handleResetUsage = async () => {
@@ -182,15 +170,30 @@ export function SettingsPanel({
 
   return (
     <div className="fixed inset-0 z-[100] flex justify-end">
-      <div className="absolute inset-0 bg-black/20 backdrop-blur-sm" onClick={onClose} />
+      <div className="absolute inset-0 bg-black/20 backdrop-blur-sm" onClick={close} />
 
       <div role="dialog" aria-modal="true" aria-label={t.settings} className="relative w-full max-w-2xl bg-white dark:bg-zinc-900 border-l border-black/[0.08] dark:border-white/[0.08] shadow-2xl overflow-y-auto animate-slide-in-right">
         <div className="sticky top-0 z-10 flex items-center justify-between px-6 py-4 border-b border-black/[0.08] dark:border-white/[0.08] bg-white/90 dark:bg-zinc-900/90 backdrop-blur-xl">
-          <h2 className="text-base font-semibold text-gray-900 dark:text-white">
-            {t.settings}
-          </h2>
+          <div className="flex items-center gap-3">
+            <h2 className="text-base font-semibold text-gray-900 dark:text-white">{t.settings}</h2>
+            <span aria-live="polite" className="flex items-center gap-1 text-xs">
+              {saveState === "saving" && (
+                <span className="flex items-center gap-1 text-gray-400">
+                  <LoaderIcon className="h-3 w-3 animate-spin" />
+                  {t.saving}
+                </span>
+              )}
+              {saveState === "saved" && (
+                <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
+                  <CheckIcon className="h-3 w-3" />
+                  {t.saved}
+                </span>
+              )}
+              {error && <span className="text-red-600 dark:text-red-400">{error}</span>}
+            </span>
+          </div>
           <button
-            onClick={onClose}
+            onClick={close}
             aria-label={t.close}
             title={t.close}
             className="p-1.5 rounded-lg hover:bg-black/[0.06] dark:hover:bg-white/[0.06] transition-colors"
@@ -293,7 +296,10 @@ export function SettingsPanel({
                     name="correction-mode"
                     value={opt.value}
                     checked={mode === opt.value}
-                    onChange={() => setMode(opt.value)}
+                    onChange={() => {
+                      setMode(opt.value);
+                      edit({ mode: opt.value }, true);
+                    }}
                     className="mt-0.5 accent-indigo-500"
                   />
                   <div>
@@ -334,8 +340,15 @@ export function SettingsPanel({
                   <label htmlFor="api-key" className="block text-xs font-medium text-gray-600 dark:text-gray-400">
                     API Key
                   </label>
-                  {apiKeySet && !clearKey && (
-                    <button type="button" onClick={() => { setClearKey(true); setApiKey(""); }} className="text-xs text-gray-500 underline-offset-2 hover:text-red-600 hover:underline">
+                  {apiKeySet && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setApiKey("");
+                        edit({ api_key: "" }, true);
+                      }}
+                      className="text-xs text-gray-500 underline-offset-2 hover:text-red-600 hover:underline"
+                    >
                       {t.clearKey}
                     </button>
                   )}
@@ -345,11 +358,10 @@ export function SettingsPanel({
                   type="password"
                   autoComplete="off"
                   value={apiKey}
-                  onChange={(e) => {
-                    setApiKey(e.target.value);
-                    setClearKey(false);
-                  }}
-                  placeholder={apiKeySet && !clearKey ? `${maskedKey} · ${t.apiKeySetPlaceholder}` : t.apiKeyPlaceholder}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  onBlur={commitKey}
+                  onKeyDown={(e) => e.key === "Enter" && commitKey()}
+                  placeholder={apiKeySet ? `${maskedKey} · ${t.apiKeySetPlaceholder}` : t.apiKeyPlaceholder}
                   className="w-full rounded-lg border border-black/[0.1] dark:border-white/[0.1] bg-white dark:bg-zinc-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
                 />
               </div>
@@ -361,7 +373,11 @@ export function SettingsPanel({
                 <input
                   type="text"
                   value={apiModel}
-                  onChange={(e) => setApiModel(e.target.value)}
+                  onChange={(e) => {
+                    setApiModel(e.target.value);
+                    edit({ api_model: e.target.value });
+                  }}
+                  onBlur={() => void flush()}
                   placeholder={t.modelName}
                   className="w-full rounded-lg border border-black/[0.1] dark:border-white/[0.1] bg-white dark:bg-zinc-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
                 />
@@ -375,7 +391,11 @@ export function SettingsPanel({
                   <input
                     type="text"
                     value={apiBaseUrl}
-                    onChange={(e) => setApiBaseUrl(e.target.value)}
+                    onChange={(e) => {
+                      setApiBaseUrl(e.target.value);
+                      edit({ api_base_url: e.target.value });
+                    }}
+                    onBlur={() => void flush()}
                     placeholder="https://api.example.com/v1"
                     className="w-full rounded-lg border border-black/[0.1] dark:border-white/[0.1] bg-white dark:bg-zinc-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
                   />
@@ -383,32 +403,6 @@ export function SettingsPanel({
               )}
             </section>
           )}
-
-          {/* Save button */}
-          <div className="flex items-center gap-3">
-            <Button
-              variant={dirty ? "default" : "secondary"}
-              size="sm"
-              className="gap-1.5"
-              disabled={saving || !dirty}
-              onClick={saveSettings}
-            >
-              {saving ? (
-                <LoaderIcon className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <SaveIcon className="h-3.5 w-3.5" />
-              )}
-              {saving ? t.saving : t.saveSettings}
-            </Button>
-            {saved && (
-              <span className="text-xs text-emerald-600 dark:text-emerald-400">{t.saved}</span>
-            )}
-            {error && <span className="text-xs text-red-600 dark:text-red-400">{error}</span>}
-            {clearKey && <span className="text-xs text-amber-600 dark:text-amber-400">{t.keyWillBeCleared}</span>}
-            {!dirty && !saved && !error && serverState && (
-              <span className="text-xs text-gray-400">{t.upToDate}</span>
-            )}
-          </div>
 
           {/* API Usage Stats */}
           {mode === "cloud_api" && (

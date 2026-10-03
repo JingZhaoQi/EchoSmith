@@ -108,9 +108,7 @@ const zh = {
   apiKeyPlaceholder: "输入 API Key",
   modelName: "模型名称",
   saving: "保存中…",
-  saveSettings: "保存设置",
   saved: "已保存",
-  upToDate: "设置已是最新",
   apiUsage: "API 调用统计",
   resetUsage: "重置统计",
   reset: "重置",
@@ -142,7 +140,6 @@ const zh = {
   savedFiles: (names: string) => `已保存：${names}`,
   keepOneFormat: "至少保留一种格式",
   clearKey: "清除 Key",
-  keyWillBeCleared: "保存后将清除已设置的 Key",
 
   // Error boundary
   appCrashed: "应用出错了",
@@ -251,9 +248,7 @@ const en: Messages = {
   apiKeyPlaceholder: "Enter API key",
   modelName: "Model",
   saving: "Saving…",
-  saveSettings: "Save Settings",
   saved: "Saved",
-  upToDate: "Settings are up to date",
   apiUsage: "API Usage",
   resetUsage: "Reset usage",
   reset: "Reset",
@@ -284,7 +279,6 @@ const en: Messages = {
   savedFiles: (names) => `Saved: ${names}`,
   keepOneFormat: "Keep at least one format",
   clearKey: "Clear key",
-  keyWillBeCleared: "The saved key will be removed when you save",
 
   appCrashed: "Something went wrong",
   errorMessage: "Error: ",
