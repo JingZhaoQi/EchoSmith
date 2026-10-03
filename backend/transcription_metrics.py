@@ -6,7 +6,6 @@ import re
 import unicodedata
 from dataclasses import dataclass
 
-
 ASR_METADATA_PATTERN = re.compile(r"<\|[^>]*?\|>")
 MARKDOWN_HEADING_PATTERN = re.compile(r"^\s{0,3}#{1,6}\s+.*$", re.MULTILINE)
 MARKDOWN_QUOTE_PATTERN = re.compile(r"^\s{0,3}>\s?", re.MULTILINE)

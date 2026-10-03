@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import re
-from dataclasses import replace
-from typing import Any
 
 _CJK = r"㐀-䶿一-鿿"
 _PUNCT = "。！？!?，,；;：:、"
@@ -15,15 +13,8 @@ def enhance_text(text: str) -> str:
     cleaned = _normalize_spacing(text or "")
     cleaned = _remove_spoken_fillers(cleaned)
     cleaned = _normalize_spacing(cleaned)
+    cleaned = _normalize_punctuation(cleaned)
     return cleaned.strip()
-
-
-def enhance_segments(segments: list[Any]) -> list[Any]:
-    enhanced: list[Any] = []
-    for segment in segments:
-        text = enhance_text(getattr(segment, "text", ""))
-        enhanced.append(replace(segment, text=text))
-    return enhanced
 
 
 def _normalize_spacing(text: str) -> str:
@@ -32,6 +23,12 @@ def _normalize_spacing(text: str) -> str:
     text = re.sub(rf"([{_PUNCT}])\s+(?=[{_CJK}])", r"\1", text)
     text = re.sub(r"[ \t]{2,}", " ", text)
     return text
+
+
+def _normalize_punctuation(text: str) -> str:
+    """SenseVoice sometimes stacks marks ("？。", "，。"): keep the stronger one."""
+    text = re.sub(r"([？！?!])[。.]+", r"\1", text)
+    return re.sub(r"[，,、]+([。！？.!?])", r"\1", text)
 
 
 def _remove_spoken_fillers(text: str) -> str:

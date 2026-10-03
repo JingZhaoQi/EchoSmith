@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 from typing import Callable
 
@@ -24,10 +25,18 @@ SYSTEM_PROMPT = (
     "只输出校正后的正文，不要任何解释、标号或前后缀。"
 )
 
-# Budget must cover both the corrected text and (for reasoning models such as
-# DeepSeek) the hidden thinking tokens, which can exceed the visible output.
 CORRECTION_MAX_TOKENS = 16384
 CORRECTION_TEMPERATURE = 0.1
+REQUEST_TIMEOUT_S = 180.0
+PROVIDER_BASE_URLS = {
+    "openai": "https://api.openai.com/v1",
+    "deepseek": "https://api.deepseek.com/v1",
+    "doubao": "https://ark.cn-beijing.volces.com/api/v3",
+}
+# Reasoning ("thinking") multiplies latency ~4x for no measured gain on transcript repair
+# (DeepSeek, 2026-10-03: 14.3 s vs 3.6 s per 1000-char batch, same fixes).
+THINKING_OFF_PROVIDERS = {"deepseek", "doubao"}
+TRUNCATED_REASONS = {"length", "max_tokens"}
 
 
 def build_correction_prompt(
@@ -42,10 +51,14 @@ def build_correction_prompt(
         )
     if preceding_text:
         truncated = preceding_text[-MAX_PRECEDING_CHARS:]
-        parts.append(f"前文（已纠正）：{truncated}")
+        parts.append(f"前文（原始转写，仅供理解上下文，不要输出）：{truncated}")
     parts.append("纠正以下语音转写文本（每行是一个 ASR 片段，行边界不可靠）：")
     parts.extend(segments)
     return "\n".join(parts)
+
+
+class _Stopped(Exception):
+    pass
 
 
 class CorrectionEngine:
@@ -58,14 +71,13 @@ class CorrectionEngine:
         api_model: str = "gpt-4o-mini",
         api_base_url: str = "",
         on_api_call: Callable[[int, bool], None] | None = None,
-        **_kwargs,
     ) -> None:
         self._mode = mode
         self._hot_words = hot_words or []
         self._api_provider = api_provider
         self._api_key = api_key
         self._api_model = api_model
-        self._api_base_url = api_base_url
+        self._api_base_url = api_base_url.rstrip("/")
         self._on_api_call = on_api_call
         self._callback_lock = threading.Lock()
 
@@ -79,29 +91,45 @@ class CorrectionEngine:
         self,
         segments: list[str],
         preceding_text: str = "",
+        on_delta: Callable[[str], None] | None = None,
+        should_stop: Callable[[], bool] | None = None,
     ) -> str:
-        """Correct a batch of ASR fragments into coherent prose.
+        """Stream a correction of ASR fragments into coherent prose.
 
-        Returns the corrected text, or "" on failure (caller falls back to
-        the raw fragments).
+        on_delta receives the accumulated text after each streamed chunk.
+        Returns the corrected text, or "" on failure, truncation or stop
+        (caller falls back to the raw fragments).
         """
-        if self._mode != "cloud_api" or not self._api_key:
+        if not self.has_model():
             return ""
-
-        prompt = build_correction_prompt(
-            segments,
-            preceding_text,
-            self._hot_words,
-        )
-
+        prompt = build_correction_prompt(segments, preceding_text, self._hot_words)
+        url, headers, body = self._request(prompt)
         try:
-            import httpx
-        except ImportError:
-            print("[CORRECTION] httpx not installed", flush=True)
+            text, reason = self._stream(url, headers, body, on_delta, should_stop)
+        except _Stopped:
             return ""
+        except (
+            Exception
+        ) as exc:  # noqa: BLE001 - network/API errors fall back to raw text
+            print(f"[CORRECTION] Cloud API error: {exc}", flush=True)
+            self._record(len(segments), failed=True)
+            return ""
+        failed = not text.strip() or reason in TRUNCATED_REASONS
+        if failed:
+            print(
+                f"[CORRECTION] 输出为空或被截断，回退原文: reason={reason}", flush=True
+            )
+        self._record(len(segments), failed)
+        return "" if failed else text.strip()
 
+    def _record(self, num_segments: int, failed: bool) -> None:
+        if self._on_api_call:
+            with self._callback_lock:
+                self._on_api_call(num_segments, failed)
+
+    def _request(self, prompt: str) -> tuple[str, dict, dict]:
         if self._api_provider == "anthropic":
-            url = "https://api.anthropic.com/v1/messages"
+            base = self._api_base_url or "https://api.anthropic.com"
             headers = {
                 "x-api-key": self._api_key,
                 "anthropic-version": "2023-06-01",
@@ -110,70 +138,82 @@ class CorrectionEngine:
             body = {
                 "model": self._api_model,
                 "max_tokens": CORRECTION_MAX_TOKENS,
+                "temperature": CORRECTION_TEMPERATURE,
                 "system": SYSTEM_PROMPT,
                 "messages": [{"role": "user", "content": prompt}],
+                "stream": True,
             }
-        else:
-            base = self._api_base_url or {
-                "openai": "https://api.openai.com/v1",
-                "deepseek": "https://api.deepseek.com/v1",
-                "doubao": "https://ark.cn-beijing.volces.com/api/v3",
-            }.get(self._api_provider, "https://api.openai.com/v1")
-            url = f"{base}/chat/completions"
-            headers = {
-                "Authorization": f"Bearer {self._api_key}",
-                "Content-Type": "application/json",
-            }
-            body = {
-                "model": self._api_model,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": SYSTEM_PROMPT,
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                "max_tokens": CORRECTION_MAX_TOKENS,
-                "temperature": CORRECTION_TEMPERATURE,
-            }
-            if self._api_provider == "deepseek":
-                # Low reasoning keeps cross-fragment repairs (measured on par
-                # with the default effort) while running ~8x faster; default
-                # and medium effort can burn the whole token budget thinking.
-                body["reasoning_effort"] = "low"
+            return f"{base}/v1/messages", headers, body
+        base = self._api_base_url or PROVIDER_BASE_URLS.get(
+            self._api_provider, PROVIDER_BASE_URLS["openai"]
+        )
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        body = {
+            "model": self._api_model,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            "max_tokens": CORRECTION_MAX_TOKENS,
+            "temperature": CORRECTION_TEMPERATURE,
+            "stream": True,
+        }
+        if self._api_provider in THINKING_OFF_PROVIDERS:
+            body["thinking"] = {"type": "disabled"}
+        return f"{base}/chat/completions", headers, body
 
-        try:
-            with httpx.Client(timeout=180.0) as client:
-                resp = client.post(url, json=body, headers=headers)
+    def _stream(
+        self,
+        url: str,
+        headers: dict,
+        body: dict,
+        on_delta: Callable[[str], None] | None,
+        should_stop: Callable[[], bool] | None,
+    ) -> tuple[str, str | None]:
+        """POST a streaming request; returns (text, finish_reason). Retries once without `thinking` if rejected."""
+        import httpx
+
+        with httpx.Client(timeout=REQUEST_TIMEOUT_S) as client:
+            with client.stream("POST", url, json=body, headers=headers) as resp:
+                if resp.status_code == 400 and "thinking" in body:
+                    resp.read()
+                    print(
+                        "[CORRECTION] 服务不支持 thinking 参数，去掉后重试", flush=True
+                    )
+                    retry = {k: v for k, v in body.items() if k != "thinking"}
+                    return self._stream(url, headers, retry, on_delta, should_stop)
                 resp.raise_for_status()
-                data = resp.json()
+                text, reason = "", None
+                for line in resp.iter_lines():
+                    if should_stop and should_stop():
+                        raise _Stopped
+                    if not line.startswith("data:"):
+                        continue
+                    payload = line[5:].strip()
+                    if payload == "[DONE]":
+                        break
+                    piece, reason = self._parse_event(json.loads(payload), reason)
+                    if piece:
+                        text += piece
+                        if on_delta:
+                            on_delta(text)
+                return text, reason
 
-            if self._api_provider == "anthropic":
-                content = data["content"][0]["text"]
-            else:
-                content = data["choices"][0]["message"]["content"]
-
-            content = (content or "").strip()
-            failed = not content
-            if failed:
-                finish_reason = (
-                    data["choices"][0].get("finish_reason")
-                    if "choices" in data
-                    else None
-                )
-                print(
-                    f"[CORRECTION] 空响应，回退原文: finish_reason={finish_reason}",
-                    flush=True,
-                )
-            else:
-                print(f"[CORRECTION] Cloud response: {content[:120]}", flush=True)
-            if self._on_api_call:
-                with self._callback_lock:
-                    self._on_api_call(len(segments), failed)
-            return content
-        except Exception as exc:
-            print(f"[CORRECTION] Cloud API error: {exc}", flush=True)
-            if self._on_api_call:
-                with self._callback_lock:
-                    self._on_api_call(len(segments), True)
-            return ""
+    def _parse_event(self, event: dict, reason: str | None) -> tuple[str, str | None]:
+        if self._api_provider == "anthropic":
+            if event.get("type") == "content_block_delta":
+                return event.get("delta", {}).get("text", ""), reason
+            if event.get("type") == "message_delta":
+                return "", event.get("delta", {}).get("stop_reason") or reason
+            return "", reason
+        choices = event.get("choices") or []
+        if not choices:
+            return "", reason
+        choice = choices[0]
+        # reasoning_content (if a model thinks anyway) is never part of the transcript
+        return (choice.get("delta") or {}).get("content") or "", choice.get(
+            "finish_reason"
+        ) or reason

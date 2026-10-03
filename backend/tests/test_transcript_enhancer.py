@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from asr_engine import Segment
-from transcript_enhancer import enhance_segments, enhance_text
+from transcript_enhancer import enhance_text
 
 
 def test_removes_artificial_spaces_between_chinese_segments() -> None:
@@ -18,14 +17,8 @@ def test_removes_standalone_spoken_fillers() -> None:
     assert result == "今天我们开始。然后看下一段。"
 
 
-def test_enhance_segments_preserves_timestamps_and_indexes() -> None:
-    segments = [
-        Segment(index=3, start_ms=1200, end_ms=2400, text="嗯，开始 。"),
-    ]
-
-    enhanced = enhance_segments(segments)
-
-    assert enhanced[0].index == 3
-    assert enhanced[0].start_ms == 1200
-    assert enhanced[0].end_ms == 2400
-    assert enhanced[0].text == "开始。"
+def test_collapses_stacked_sentence_punctuation() -> None:
+    assert enhance_text("启示了什么样的？。") == "启示了什么样的？"
+    assert enhance_text("到了，。他爱") == "到了。他爱"
+    assert enhance_text("真的！！") == "真的！！"  # repeated emphasis is kept
+    assert enhance_text("Really?.") == "Really?"

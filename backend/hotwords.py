@@ -1,4 +1,5 @@
 """User-managed hotword list for domain-specific ASR correction."""
+
 from __future__ import annotations
 
 import json

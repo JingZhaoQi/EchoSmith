@@ -1,4 +1,5 @@
 """Local ASR model selection (single bundled SenseVoice model)."""
+
 from __future__ import annotations
 
 DEFAULT_ASR_MODEL_ID = "sensevoice-sherpa-2024"
