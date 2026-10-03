@@ -6,7 +6,6 @@ import { MoonIcon, SettingsIcon, SparklesIcon, SunIcon, UploadIcon } from "lucid
 import { useTheme } from "../hooks/useTheme";
 import { BatchTaskComposer } from "../components/BatchTaskComposer";
 import { SettingsPanel } from "../components/SettingsPanel";
-import { TaskLibraryPanel } from "../components/TaskLibraryPanel";
 import { TaskView } from "../components/TaskView";
 import { UrlTaskComposer } from "../components/UrlTaskComposer";
 import { Button } from "../components/ui/button";
@@ -25,15 +24,14 @@ const POLL_IDLE_MS = 5000;
 
 type SourceTab = "batch" | "url";
 
-function IntakeView(): JSX.Element {
+function IntakeView({ tab, setTab }: { tab: SourceTab; setTab(tab: SourceTab): void }): JSX.Element {
   const t = useT();
-  const [tab, setTab] = useState<SourceTab>("batch");
   const tabs: Array<{ key: SourceTab; label: string }> = [
     { key: "batch", label: t.tabBatch },
     { key: "url", label: t.tabUrl },
   ];
   return (
-    <div className="mx-auto flex h-full min-h-0 w-full max-w-2xl flex-col gap-4">
+    <div className="flex h-full min-h-0 flex-col gap-4">
       <div role="tablist" className="relative flex flex-shrink-0 rounded-2xl border border-white/60 bg-white/40 p-1 shadow-sm dark:border-white/[0.08] dark:bg-white/[0.05]">
         <div
           className="absolute bottom-1 top-1 rounded-xl bg-white shadow-sm transition-transform duration-200 ease-out dark:bg-white/[0.10]"
@@ -72,6 +70,7 @@ function AppShell(): JSX.Element {
   const [showSettings, setShowSettings] = useState(false);
   const [correctionActive, setCorrectionActive] = useState(false);
   const [dropNotice, setDropNotice] = useState<string | null>(null);
+  const [sourceTab, setSourceTab] = useState<SourceTab>("batch");
   const [systemDark, setSystemDark] = useState(
     () => typeof window !== "undefined" && window.matchMedia("(prefers-color-scheme: dark)").matches
   );
@@ -105,7 +104,8 @@ function AppShell(): JSX.Element {
     setDropNotice(t.unsupportedFormat);
     setTimeout(() => setDropNotice(null), 3000);
   }, [t]);
-  const dragging = useFileDrop(onRejected);
+  const onAccepted = useCallback(() => setSourceTab("batch"), []);
+  const dragging = useFileDrop(onAccepted, onRejected);
 
   useEffect(() => {
     void ensureBackendBase();
@@ -180,9 +180,13 @@ function AppShell(): JSX.Element {
           </div>
         </header>
 
-        <main className="grid min-h-0 flex-1 grid-cols-[240px_minmax(0,1fr)] gap-4 p-4 xl:grid-cols-[280px_minmax(0,1fr)] xl:gap-5 xl:p-5">
-          <TaskLibraryPanel />
-          <section className="min-h-0">{activeTask ? <TaskView task={activeTask} /> : <IntakeView />}</section>
+        <main className="grid min-h-0 flex-1 grid-cols-[340px_minmax(0,1fr)] gap-4 p-4 xl:grid-cols-[400px_minmax(0,1fr)] xl:gap-5 xl:p-5">
+          <section className="min-h-0">
+            <IntakeView tab={sourceTab} setTab={setSourceTab} />
+          </section>
+          <section className="min-h-0">
+            <TaskView task={activeTask} correctionActive={correctionActive} />
+          </section>
         </main>
 
         {(dragging || dropNotice) && (

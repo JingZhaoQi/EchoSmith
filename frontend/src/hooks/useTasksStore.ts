@@ -11,9 +11,14 @@ export const isActive =(task: TaskSummary): boolean => !TERMINAL_STATUSES.has(ta
 
 interface TasksState {
   tasks: Record<string, TaskSnapshot>;
-  /** Task shown in the main area; null shows the "new task" intake view. */
+  /** Task shown in the output area. */
   activeTaskId: string | null;
+  /** True while the output follows the running batch file; cleared when the user picks a row. */
+  followBatch: boolean;
   setActiveTask(id: string | null): void;
+  /** The user picked a task to look at: show it and stop following the batch. */
+  selectTask(id: string): void;
+  setFollowBatch(follow: boolean): void;
   upsertTask(snapshot: TaskSnapshot): void;
   /** Replace the library with the polled list, keeping texts already loaded for each task. */
   mergeSummaries(list: TaskSummary[]): void;
@@ -23,7 +28,10 @@ interface TasksState {
 export const useTasksStore = create<TasksState>((set) => ({
   tasks: {},
   activeTaskId: null,
+  followBatch: true,
   setActiveTask: (id) => set({ activeTaskId: id }),
+  selectTask: (id) => set({ activeTaskId: id, followBatch: false }),
+  setFollowBatch: (follow) => set({ followBatch: follow }),
   upsertTask: (snapshot) =>
     set((state) => ({ tasks: { ...state.tasks, [snapshot.id]: { ...state.tasks[snapshot.id], ...snapshot } } })),
   mergeSummaries: (list) =>

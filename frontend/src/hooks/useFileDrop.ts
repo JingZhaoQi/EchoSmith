@@ -2,22 +2,19 @@
 import { useEffect, useState } from "react";
 
 import { useBatchStore, type NewBatchFile } from "./useBatchStore";
-import { useTasksStore } from "./useTasksStore";
 
 const baseName = (path: string) => path.split(/[\\/]/).pop() || path;
 
-export function useFileDrop(onRejected: () => void): boolean {
+/** Adds dropped media to the batch; onAccepted lets the caller reveal the batch list. Returns "dragging". */
+export function useFileDrop(onAccepted: () => void, onRejected: () => void): boolean {
   const [dragging, setDragging] = useState(false);
 
   useEffect(() => {
     const accept = (files: NewBatchFile[]) => {
       setDragging(false);
       if (!files.length) return;
-      if (useBatchStore.getState().addFiles(files) === 0) {
-        onRejected();
-        return;
-      }
-      useTasksStore.getState().setActiveTask(null); // show the intake view with the new files
+      if (useBatchStore.getState().addFiles(files) === 0) onRejected();
+      else onAccepted();
     };
 
     let unlisten: (() => void) | undefined;
@@ -58,7 +55,7 @@ export function useFileDrop(onRejected: () => void): boolean {
       window.removeEventListener("dragleave", leave);
       window.removeEventListener("drop", drop);
     };
-  }, [onRejected]);
+  }, [onAccepted, onRejected]);
 
   return dragging;
 }

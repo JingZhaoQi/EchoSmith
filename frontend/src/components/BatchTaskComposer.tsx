@@ -1,32 +1,29 @@
-// Batch intake for local files; the queue itself lives in useBatchStore so it survives view changes.
+// Batch intake for local files; the list doubles as the task list (click a file to view its result).
 import { useRef, useState } from "react";
-import { CheckIcon, FileAudioIcon, PlayIcon, SquareIcon, Trash2Icon, UploadIcon, XIcon } from "lucide-react";
+import { PlayIcon, SquareIcon, Trash2Icon, UploadIcon } from "lucide-react";
 
+import { TaskRow } from "./TaskRow";
 import { Button } from "./ui/button";
 import { MEDIA_EXTENSIONS, useBatchStore, type BatchItem } from "../hooks/useBatchStore";
 import { useSaveStore } from "../hooks/useSaveStore";
-import { EXPORT_FORMATS, isTauri, type ExportFormat } from "../lib/api";
+import { useTasksStore } from "../hooks/useTasksStore";
+import { isTauri, type TaskSnapshot } from "../lib/api";
 import { useT, type Messages } from "../lib/i18n";
 
-const FORMAT_LABEL: Record<ExportFormat, string> = { txt: "TXT", srt: "SRT", md: "Markdown" };
 const baseName = (path: string) => path.split(/[\\/]/).pop() || path;
 
-function ItemIcon({ status }: { status: BatchItem["status"] }): JSX.Element {
-  if (status === "completed") return <CheckIcon className="h-4 w-4 flex-shrink-0 text-emerald-500" />;
-  if (status === "failed" || status === "cancelled") return <XIcon className="h-4 w-4 flex-shrink-0 text-red-500" />;
-  if (status === "processing")
-    return <div className="h-4 w-4 flex-shrink-0 animate-spin rounded-full border-2 border-sky-500 border-t-transparent" />;
-  return <FileAudioIcon className="h-4 w-4 flex-shrink-0 text-slate-400" />;
+/** Status for an item whose task is not (or no longer) in the store; otherwise the row shows the task's own. */
+function itemNote(item: BatchItem, task: TaskSnapshot | undefined, t: Messages): string | undefined {
+  if (task) return undefined;
+  if (item.status === "pending") return t.status.queued;
+  if (item.status === "processing") return t.status.running;
+  return t.status[item.status];
 }
-
-const itemStatus = (item: BatchItem, t: Messages) =>
-  item.status === "pending" ? t.status.queued : item.status === "processing" ? t.status.running : t.status[item.status];
 
 export function BatchTaskComposer(): JSX.Element {
   const t = useT();
   const { items, running, addFiles, removeItem, start, stop, clear } = useBatchStore();
-  const formats = useSaveStore((state) => state.formats);
-  const toggleFormat = useSaveStore((state) => state.toggleFormat);
+  const tasks = useTasksStore((state) => state.tasks);
   const saveResults = useSaveStore((state) => state.results);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -52,47 +49,29 @@ export function BatchTaskComposer(): JSX.Element {
 
   const pending = items.filter((i) => i.status === "pending").length;
   const done = items.filter((i) => i.status === "completed").length;
+  const compact = items.length > 0;
 
   return (
-    <div className="liquid-panel flex h-full min-h-0 flex-col gap-5 p-6">
+    <div className="liquid-panel flex h-full min-h-0 flex-col gap-4 p-5">
       <div>
         <h2 className="text-base font-semibold text-slate-950 dark:text-white">{t.batchTitle}</h2>
         <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{t.batchSubtitle}</p>
       </div>
 
-      <div>
-        <span className="mb-2 block text-sm font-medium text-slate-900 dark:text-white" title={t.defaultSaveHint}>
-          {t.defaultSave}
-        </span>
-        <div className="flex gap-2" role="group" aria-label={t.defaultSave}>
-          {EXPORT_FORMATS.map((format) => (
-            <button
-              key={format}
-              type="button"
-              aria-pressed={formats.includes(format)}
-              onClick={() => toggleFormat(format)}
-              className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-all ${
-                formats.includes(format)
-                  ? "bg-slate-950 text-white shadow-sm dark:bg-white dark:text-slate-950"
-                  : "glass-field text-slate-700 hover:bg-white/70 dark:text-slate-300 dark:hover:bg-white/[0.10]"
-              }`}
-            >
-              {FORMAT_LABEL[format]}
-            </button>
-          ))}
-        </div>
-      </div>
-
       <button
         type="button"
         onClick={() => void chooseFiles()}
-        className="group flex flex-col items-center justify-center rounded-2xl border-2 border-dashed border-slate-300/80 bg-white/35 px-5 py-7 text-center transition-all hover:border-slate-400/70 hover:bg-white/55 dark:border-white/[0.12] dark:bg-white/[0.04] dark:hover:bg-white/[0.07]"
+        className={`group flex flex-shrink-0 items-center justify-center rounded-2xl border-2 border-dashed border-slate-300/80 bg-white/35 text-center transition-all hover:border-slate-400/70 hover:bg-white/55 dark:border-white/[0.12] dark:bg-white/[0.04] dark:hover:bg-white/[0.07] ${
+          compact ? "gap-3 px-4 py-3" : "flex-col px-5 py-8"
+        }`}
       >
-        <span className="mb-3 rounded-full bg-sky-500/10 p-3 transition-colors group-hover:bg-sky-500/15 dark:bg-sky-400/10">
-          <UploadIcon className="h-7 w-7 text-sky-700 dark:text-sky-300" strokeWidth={2.5} />
+        <span className={`rounded-full bg-sky-500/10 transition-colors group-hover:bg-sky-500/15 dark:bg-sky-400/10 ${compact ? "p-2" : "mb-3 p-3"}`}>
+          <UploadIcon className={`${compact ? "h-4 w-4" : "h-7 w-7"} text-sky-700 dark:text-sky-300`} strokeWidth={2.5} />
         </span>
-        <span className="mb-1 text-sm font-semibold text-slate-950 dark:text-white">{t.clickOrDrag}</span>
-        <span className="text-xs text-slate-500 dark:text-slate-400">{t.supportedFormats}</span>
+        <span className="flex flex-col">
+          <span className="text-sm font-semibold text-slate-950 dark:text-white">{t.clickOrDrag}</span>
+          {!compact && <span className="mt-1 text-xs text-slate-500 dark:text-slate-400">{t.supportedFormats}</span>}
+        </span>
       </button>
       <input
         ref={inputRef}
@@ -109,43 +88,28 @@ export function BatchTaskComposer(): JSX.Element {
 
       {items.length > 0 && (
         <ul className="min-h-0 flex-1 space-y-2 overflow-y-auto">
-          {items.map((item) => (
-            <li key={item.id} className="glass-field rounded-2xl px-3 py-2 text-sm">
-              <div className="flex items-center gap-2">
-                <ItemIcon status={item.status} />
-                <span className="min-w-0 flex-1 truncate font-medium" title={item.path ?? item.name}>
-                  {item.name}
-                </span>
-                <span className="flex-shrink-0 text-[11px] text-slate-500 dark:text-slate-400">{itemStatus(item, t)}</span>
-                <button
-                  type="button"
-                  onClick={() => removeItem(item.id)}
-                  title={t.remove}
-                  aria-label={`${t.remove} ${item.name}`}
-                  className="rounded-lg p-1 text-slate-500 transition-colors hover:bg-black/[0.08] dark:hover:bg-white/[0.12]"
-                >
-                  <XIcon className="h-4 w-4" />
-                </button>
-              </div>
-              {(() => {
-                const saveError = item.taskId ? saveResults[item.taskId]?.error : undefined;
-                const message = item.error ?? (saveError && `${t.exportErrorPrefix}${saveError}`);
-                return message ? (
-                  <p className="mt-1 truncate pl-6 text-[11px] text-red-500 dark:text-red-300" title={message}>
-                    {message}
-                  </p>
-                ) : null;
-              })()}
-            </li>
-          ))}
+          {items.map((item) => {
+            const task = item.taskId ? tasks[item.taskId] : undefined;
+            const saveError = item.taskId ? saveResults[item.taskId]?.error : undefined;
+            return (
+              <TaskRow
+                key={item.id}
+                name={item.name}
+                task={task}
+                note={itemNote(item, task, t)}
+                error={item.error ?? (saveError && `${t.exportErrorPrefix}${saveError}`)}
+                onRemove={() => removeItem(item.id)}
+              />
+            );
+          })}
         </ul>
       )}
 
-      <div className="mt-auto flex items-center gap-2">
+      <div className="mt-auto flex flex-shrink-0 items-center gap-2">
         {running ? (
           <Button variant="secondary" className="flex-1 gap-2" onClick={stop}>
             <SquareIcon className="h-4 w-4" />
-            {t.stopBatch} · {t.processing(done, items.length)}
+            {t.stopBatch} ({done}/{items.length})
           </Button>
         ) : (
           <Button className="flex-1 gap-2" disabled={pending === 0} onClick={start}>

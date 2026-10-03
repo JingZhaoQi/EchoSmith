@@ -24,7 +24,7 @@ describe("batch queue", () => {
     vi.clearAllMocks();
     created = 0;
     vi.mocked(createTaskFromPath).mockImplementation(async () => `task${++created}`);
-    useTasksStore.setState({ tasks: {}, activeTaskId: null });
+    useTasksStore.setState({ tasks: {}, activeTaskId: null, followBatch: true });
     useBatchStore.setState({ items: [], running: false });
   });
 
@@ -52,12 +52,16 @@ describe("batch queue", () => {
     expect(useBatchStore.getState().items.map((i) => i.status)).toEqual(["completed", "failed"]);
   });
 
-  it("does not steal focus from a task the user opened", async () => {
-    useTasksStore.setState({ activeTaskId: "other", tasks: { other: makeTask("other", "completed", { created_at: Date.now() / 1000 }) } });
-    useBatchStore.getState().addFiles([{ name: "a.m4a", path: "/x/a.m4a" }]);
-    useBatchStore.getState().start();
+  it("stops following the batch once the user picks a row", async () => {
+    const store = useBatchStore.getState();
+    store.addFiles([{ name: "a.m4a", path: "/x/a.m4a" }, { name: "b.m4a", path: "/x/b.m4a" }]);
+    store.start();
     await until(() => created === 1);
-    expect(useTasksStore.getState().activeTaskId).toBe("other");
+    expect(useTasksStore.getState().activeTaskId).toBe("task1");
+    useTasksStore.getState().selectTask("task1"); // user clicked the row
+    finish("task1", "completed");
+    await until(() => created === 2);
+    expect(useTasksStore.getState().activeTaskId).toBe("task1");
   });
 
   it("stop cancels the running task and leaves the rest pending", async () => {

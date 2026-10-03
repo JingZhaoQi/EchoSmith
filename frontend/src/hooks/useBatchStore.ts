@@ -59,6 +59,7 @@ export const useBatchStore = create<BatchState>((set, get) => ({
   },
   start: () => {
     if (get().running || !get().items.some((i) => i.status === "pending")) return;
+    useTasksStore.getState().setFollowBatch(true);
     set({ running: true });
     void runQueue();
   },
@@ -81,7 +82,6 @@ function patch(id: string, changes: Partial<BatchItem>): void {
 const exists = (id: string) => useBatchStore.getState().items.some((i) => i.id === id);
 
 async function runQueue(): Promise<void> {
-  let previousTaskId: string | null = null;
   for (;;) {
     const { running, items } = useBatchStore.getState();
     const item = items.find((i) => i.status === "pending");
@@ -93,9 +93,8 @@ async function runQueue(): Promise<void> {
       const now = Date.now() / 1000;
       const tasks = useTasksStore.getState();
       tasks.upsertTask(placeholderTask(taskId, item, now));
-      // Follow the batch only if the user is not looking at some other task.
-      if (tasks.activeTaskId === null || tasks.activeTaskId === previousTaskId) tasks.setActiveTask(taskId);
-      previousTaskId = taskId;
+      // Follow the batch until the user picks a row to look at.
+      if (tasks.followBatch) tasks.setActiveTask(taskId);
       if (!useBatchStore.getState().running || !exists(item.id)) void cancelTask(taskId).catch(() => undefined);
 
       const final = await waitForTerminal(taskId);

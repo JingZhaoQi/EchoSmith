@@ -12,8 +12,10 @@ import {
   BadgeCheckIcon,
 } from "lucide-react";
 
+import { TaskRow } from "./TaskRow";
 import { Button } from "./ui/button";
-import { createTaskFromUrl, downloadMedia, errorMessage } from "../lib/api";
+import { createTaskFromUrl, deleteTask, downloadMedia, errorMessage } from "../lib/api";
+import { getSourceLabel } from "../lib/constants";
 import { useTasksStore } from "../hooks/useTasksStore";
 import { localizeBackendMessage, useLocaleStore, useT, type Messages } from "../lib/i18n";
 
@@ -48,7 +50,12 @@ export function UrlTaskComposer(): JSX.Element {
   const locale = useLocaleStore((state) => state.locale);
 
   const upsertTask = useTasksStore((state) => state.upsertTask);
-  const setActiveTask = useTasksStore((state) => state.setActiveTask);
+  const selectTask = useTasksStore((state) => state.selectTask);
+  const removeTask = useTasksStore((state) => state.removeTask);
+  const allTasks = useTasksStore((state) => state.tasks);
+  const urlTasks = Object.values(allTasks)
+    .filter((task) => task.source.type === "url")
+    .sort((a, b) => b.created_at - a.created_at);
 
   const mutation = useMutation({
     mutationFn: async (videoUrl: string) => {
@@ -70,7 +77,7 @@ export function UrlTaskComposer(): JSX.Element {
         updated_at: now,
       });
 
-      setActiveTask(taskId);
+      selectTask(taskId);
       return taskId;
     },
     onSuccess: () => {
@@ -261,6 +268,21 @@ export function UrlTaskComposer(): JSX.Element {
         <p className="text-xs text-red-600 dark:text-red-400">
           {errorMessage(dlMutation.error) || t.downloadFailed}
         </p>
+      )}
+
+      {urlTasks.length > 0 && (
+        <ul className="space-y-2">
+          {urlTasks.map((task) => (
+            <TaskRow
+              key={task.id}
+              name={getSourceLabel(task.source, 60) || task.id.slice(0, 8)}
+              task={task}
+              error={task.status === "failed" ? (task.error ?? undefined) : undefined}
+              isUrl
+              onRemove={() => void deleteTask(task.id).catch(() => undefined).then(() => removeTask(task.id))}
+            />
+          ))}
+        </ul>
       )}
 
       {/* Toast notification */}
