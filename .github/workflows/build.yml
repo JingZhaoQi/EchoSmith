@@ -199,7 +199,8 @@ jobs:
           $ExtractDir = "$env:TEMP\ffmpeg-extract"
           $InstallDir = "C:\ffmpeg"
           Write-Host "Downloading static ffmpeg..."
-          Invoke-WebRequest -Uri $FfmpegUrl -OutFile $ZipPath
+          # BtbN re-publishes the "latest" release daily; retry across the brief window where the asset 404s
+          Invoke-WebRequest -Uri $FfmpegUrl -OutFile $ZipPath -MaximumRetryCount 10 -RetryIntervalSec 30
           Expand-Archive -Path $ZipPath -DestinationPath $ExtractDir -Force
           $BinDir = (Get-ChildItem $ExtractDir -Directory | Select-Object -First 1).FullName + "\bin"
           New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
