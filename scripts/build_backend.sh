@@ -29,19 +29,23 @@ SHERPA_MODEL_SRC="$HOME/.cache/sherpa-onnx/sense-voice"
 
 if [ -d "$SHERPA_MODEL_SRC" ]; then
   echo "Found sherpa-onnx models at: $SHERPA_MODEL_SRC"
-  rm -rf "$MODELS_CACHE"
-  mkdir -p "$MODELS_CACHE"
+  # Stage first: the source may symlink into $MODELS_CACHE, so deleting it before copying would destroy the models
+  MODELS_STAGE=$(mktemp -d)
   # Only copy essential files (INT8 model + tokens + VAD)
-  cp "$SHERPA_MODEL_SRC/model.int8.onnx" "$MODELS_CACHE/"
-  cp "$SHERPA_MODEL_SRC/tokens.txt" "$MODELS_CACHE/"
+  cp "$SHERPA_MODEL_SRC/model.int8.onnx" "$MODELS_STAGE/"
+  cp "$SHERPA_MODEL_SRC/tokens.txt" "$MODELS_STAGE/"
   # Copy Silero VAD model if available
   SILERO_VAD="$HOME/.cache/sherpa-onnx/silero_vad.onnx"
   if [ -f "$SILERO_VAD" ]; then
-    cp "$SILERO_VAD" "$MODELS_CACHE/"
+    cp "$SILERO_VAD" "$MODELS_STAGE/"
     echo "Copied Silero VAD model"
   else
     echo "WARNING: silero_vad.onnx not found at $SILERO_VAD"
   fi
+  rm -rf "$MODELS_CACHE"
+  mkdir -p "$(dirname "$MODELS_CACHE")"
+  mv "$MODELS_STAGE" "$MODELS_CACHE"
+  chmod 755 "$MODELS_CACHE"
   echo "Copied models to: $MODELS_CACHE"
   ls -lh "$MODELS_CACHE"
 else
@@ -154,6 +158,22 @@ else
   ls -lh "$FFMPEG_DIR"
 fi
 
+# Bundle deno: yt-dlp needs a JS runtime to solve YouTube challenges
+DENO_VERSION="2.6.6"
+DENO_DIR="$ROOT_DIR/deno_bin"
+case "$(uname -m)" in
+  arm64) DENO_TARGET="aarch64-apple-darwin" ;;
+  *) DENO_TARGET="x86_64-apple-darwin" ;;
+esac
+echo "=== Bundling deno $DENO_VERSION ($DENO_TARGET) ==="
+rm -rf "$DENO_DIR"
+mkdir -p "$DENO_DIR"
+curl -fsSL --retry 3 --retry-all-errors "https://github.com/denoland/deno/releases/download/v$DENO_VERSION/deno-$DENO_TARGET.zip" -o "$DENO_DIR/deno.zip"
+unzip -q "$DENO_DIR/deno.zip" -d "$DENO_DIR"
+rm "$DENO_DIR/deno.zip"
+chmod +x "$DENO_DIR/deno"
+"$DENO_DIR/deno" --version
+
 # Build standalone backend executable with PyInstaller
 cd "$BACKEND_DIR"
 
@@ -167,6 +187,8 @@ fi
 if [ -d "$FFMPEG_DIR" ] && [ -f "$FFMPEG_DIR/ffmpeg" ]; then
   ADD_DATA_ARGS="$ADD_DATA_ARGS --add-data $FFMPEG_DIR:ffmpeg_bin"
 fi
+
+ADD_DATA_ARGS="$ADD_DATA_ARGS --add-data $DENO_DIR:deno_bin"
 
 pyinstaller \
   --name backend \
@@ -184,6 +206,15 @@ pyinstaller \
   --collect-all sherpa_onnx \
   $ADD_DATA_ARGS \
   __main__.py
+
+# YouTube downloads fail without these; abort instead of shipping a broken build
+INTERNAL_DIR="$BUILD_OUTPUT_DIR/backend/_internal"
+for required in "$INTERNAL_DIR/deno_bin/deno" "$INTERNAL_DIR/yt_dlp_ejs"; do
+  if [ ! -e "$required" ]; then
+    echo "ERROR: missing from bundle: $required"
+    exit 1
+  fi
+done
 
 # Cleanup temporary venv
 deactivate

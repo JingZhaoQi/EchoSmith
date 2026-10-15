@@ -168,6 +168,20 @@ if ($RealFfmpeg -and $RealFfprobe) {
     Get-ChildItem $FfmpegDir | ForEach-Object { Write-Host "  $($_.Name): $([math]::Round($_.Length/1MB))MB" }
 }
 
+# Bundle deno: yt-dlp needs a JS runtime to solve YouTube challenges
+$DenoVersion = "2.6.6"
+$DenoDir = Join-Path $Root "deno_bin"
+Write-Host "=== Bundling deno $DenoVersion ==="
+if (Test-Path $DenoDir) {
+    Remove-Item -Recurse -Force $DenoDir
+}
+New-Item -ItemType Directory -Path $DenoDir -Force | Out-Null
+$DenoZip = Join-Path $DenoDir "deno.zip"
+Invoke-WebRequest -Uri "https://github.com/denoland/deno/releases/download/v$DenoVersion/deno-x86_64-pc-windows-msvc.zip" -OutFile $DenoZip
+Expand-Archive -Path $DenoZip -DestinationPath $DenoDir -Force
+Remove-Item $DenoZip -Force
+& (Join-Path $DenoDir "deno.exe") --version
+
 # Build standalone backend executable with PyInstaller
 Set-Location $Backend
 
@@ -182,6 +196,8 @@ if (Test-Path $ModelsCache) {
 if ((Test-Path $FfmpegDir) -and (Test-Path (Join-Path $FfmpegDir "ffmpeg.exe"))) {
     $AddDataArgs += @("--add-data", "$FfmpegDir;ffmpeg_bin")
 }
+
+$AddDataArgs += @("--add-data", "$DenoDir;deno_bin")
 
 $PyInstallerArgs = @(
     "--name", "backend",
@@ -200,6 +216,14 @@ $PyInstallerArgs = @(
 ) + $AddDataArgs + @("__main__.py")
 
 & pyinstaller @PyInstallerArgs
+
+# YouTube downloads fail without these; abort instead of shipping a broken build
+$InternalDir = Join-Path $BuildOutput "backend\_internal"
+foreach ($Required in @("deno_bin\deno.exe", "yt_dlp_ejs")) {
+    if (-not (Test-Path (Join-Path $InternalDir $Required))) {
+        throw "Missing from bundle: $Required"
+    }
+}
 
 # Cleanup temporary venv
 deactivate

@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import platform
 import re
+import shutil
 import subprocess
+import sys
 import tempfile
 import uuid
 from pathlib import Path
@@ -43,6 +46,68 @@ _BROWSER_ORDER = (
     else ("chrome", "firefox", "edge", "brave")
 )
 
+
+
+def _detect_js_runtimes() -> dict:
+    """Locate JS runtimes yt-dlp needs to solve YouTube challenges.
+
+    Packaged builds ship deno in deno_bin/ (searched first). GUI-launched
+    processes get a minimal PATH, so also search common install dirs.
+    """
+    home = Path.home()
+    bundle_dir = getattr(sys, "_MEIPASS", None)
+    search_path = os.pathsep.join([
+        str(Path(bundle_dir) / "deno_bin") if bundle_dir else "",
+        os.environ.get("PATH", ""),
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        str(home / ".deno" / "bin"),
+        str(home / ".bun" / "bin"),
+    ])
+    runtimes = {
+        name: {"path": exe}
+        for name in ("deno", "node", "bun")
+        if (exe := shutil.which(name, path=search_path))
+    }
+    return runtimes or {"deno": {}}
+
+
+_JS_RUNTIMES = _detect_js_runtimes()
+
+# macOS browser profile dirs under ~/Library/Application Support
+_MAC_BROWSER_DIRS = ("Google/Chrome", "Firefox", "BraveSoftware/Brave-Browser", "Microsoft Edge")
+
+
+def _macos_blocks_browser_data() -> bool:
+    """True if a browser profile exists but macOS privacy protection (TCC) denies reading it."""
+    if platform.system() != "Darwin":
+        return False
+    base = Path.home() / "Library" / "Application Support"
+    for rel in _MAC_BROWSER_DIRS:
+        try:
+            os.listdir(base / rel)
+        except PermissionError:
+            return True
+        except OSError:
+            continue
+    return False
+
+
+def _auth_failure(attempt_errors: list[str]) -> RuntimeError:
+    """Build the user-facing error after every cookie attempt failed."""
+    if _macos_blocks_browser_data():
+        return RuntimeError(
+            "macOS 阻止了 EchoSmith 读取浏览器登录状态。"
+            "请在「系统设置 → 隐私与安全性 → 完全磁盘访问权限」中打开 EchoSmith，"
+            "然后重启 EchoSmith 再试。"
+        )
+    return RuntimeError(
+        "该平台需要登录认证才能下载。"
+        "请在浏览器（Chrome / Firefox / Brave / Edge）中登录对应网站（如 YouTube），然后重试。\n"
+        "各次尝试结果：\n" + "\n".join(attempt_errors)
+    )
+
+
 _AUTH_ERROR_RE = re.compile(
     r"Sign in to confirm|not a bot|cookies|login required|Requested format is not available",
     re.IGNORECASE,
@@ -73,6 +138,7 @@ def _safe_ytdlp_opts(url: str) -> dict:
         "retries": 3,
         "fragment_retries": 3,
         "extractor_retries": 2,
+        "js_runtimes": _JS_RUNTIMES,
     }
     if _BILIBILI_RE.search(url):
         opts["http_headers"] = {
@@ -181,7 +247,7 @@ def download_audio(
     for leftover in DOWNLOAD_DIR.glob(f"{task_id}.*"):
         leftover.unlink(missing_ok=True)
 
-    last_err: Optional[Exception] = None
+    browser_errors: list[str] = []
     for browser in _BROWSER_ORDER:
         try:
             cookie_opts = dict(base_opts)
@@ -192,18 +258,14 @@ def download_audio(
         except _DownloadCancelled:
             raise
         except Exception as e:
-            last_err = e
-            log.debug("Browser %s failed: %s", browser, e)
+            browser_errors.append(f"{browser}: {e}")
+            log.info("Browser %s failed: %s", browser, e)
             # Clean partial files before next attempt
             for leftover in DOWNLOAD_DIR.glob(f"{task_id}.*"):
                 leftover.unlink(missing_ok=True)
             continue
 
-    raise RuntimeError(
-        "该平台需要登录认证才能下载。"
-        "请在浏览器中登录对应网站（如 YouTube），然后重试。\n"
-        f"原始错误：{last_err}"
-    )
+    raise _auth_failure(browser_errors)
 
 
 # ── Douyin helpers ──────────────────────────────────────────────────
@@ -452,7 +514,7 @@ def _ytdlp_download_media(
         opts["format"] = "bv*+ba/b"
         opts["merge_output_format"] = "mp4"
 
-    last_err: Exception | None = None
+    attempt_errors: list[str] = []
     for attempt_opts in _ytdlp_attempt_opts(opts):
         try:
             with yt_dlp.YoutubeDL(attempt_opts) as ydl:
@@ -460,19 +522,13 @@ def _ytdlp_download_media(
                 title = _sanitize_filename((info or {}).get("title", "") or tmp_id)
             break
         except Exception as e:
-            last_err = e
+            attempt_errors.append(str(e))
             for f in save_path.glob(f"_tmp_{tmp_id}.*"):
                 f.unlink(missing_ok=True)
             if not _AUTH_ERROR_RE.search(str(e)):
                 raise
     else:
-        err_str = str(last_err)
-        if _AUTH_ERROR_RE.search(err_str) or "Sign in" in err_str:
-            raise RuntimeError(
-                "该视频需要登录认证才能下载。"
-                "请在 Chrome 浏览器中登录 YouTube，然后重试。"
-            )
-        raise RuntimeError(f"下载失败: {last_err}")
+        raise _auth_failure(attempt_errors)
 
     # Rename temp files to title-based name
     for f in save_path.glob(f"_tmp_{tmp_id}.*"):
