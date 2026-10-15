@@ -47,7 +47,6 @@ _BROWSER_ORDER = (
 )
 
 
-
 def _detect_js_runtimes() -> dict:
     """Locate JS runtimes yt-dlp needs to solve YouTube challenges.
 
@@ -56,14 +55,16 @@ def _detect_js_runtimes() -> dict:
     """
     home = Path.home()
     bundle_dir = getattr(sys, "_MEIPASS", None)
-    search_path = os.pathsep.join([
-        str(Path(bundle_dir) / "deno_bin") if bundle_dir else "",
-        os.environ.get("PATH", ""),
-        "/opt/homebrew/bin",
-        "/usr/local/bin",
-        str(home / ".deno" / "bin"),
-        str(home / ".bun" / "bin"),
-    ])
+    search_path = os.pathsep.join(
+        [
+            str(Path(bundle_dir) / "deno_bin") if bundle_dir else "",
+            os.environ.get("PATH", ""),
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            str(home / ".deno" / "bin"),
+            str(home / ".bun" / "bin"),
+        ]
+    )
     runtimes = {
         name: {"path": exe}
         for name in ("deno", "node", "bun")
@@ -75,7 +76,12 @@ def _detect_js_runtimes() -> dict:
 _JS_RUNTIMES = _detect_js_runtimes()
 
 # macOS browser profile dirs under ~/Library/Application Support
-_MAC_BROWSER_DIRS = ("Google/Chrome", "Firefox", "BraveSoftware/Brave-Browser", "Microsoft Edge")
+_MAC_BROWSER_DIRS = (
+    "Google/Chrome",
+    "Firefox",
+    "BraveSoftware/Brave-Browser",
+    "Microsoft Edge",
+)
 
 
 def _macos_blocks_browser_data() -> bool:
