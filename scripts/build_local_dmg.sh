@@ -60,7 +60,8 @@ done < <(find "$APP_PATH/Contents/Resources" -name "*.so" -print0)
 for bin in \
     "$APP_PATH/Contents/Resources/backend/backend" \
     "$APP_PATH/Contents/Resources/backend/_internal/ffmpeg_bin/ffmpeg" \
-    "$APP_PATH/Contents/Resources/backend/_internal/ffmpeg_bin/ffprobe"; do
+    "$APP_PATH/Contents/Resources/backend/_internal/ffmpeg_bin/ffprobe" \
+    "$APP_PATH/Contents/Resources/backend/_internal/deno_bin/deno"; do
     if [ -f "$bin" ]; then
         codesign --force -s - "$bin" 2>/dev/null && SIGN_COUNT=$((SIGN_COUNT + 1))
     fi

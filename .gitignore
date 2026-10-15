@@ -165,6 +165,7 @@ temp/
 
 # ffmpeg binaries (build artifact)
 ffmpeg_bin/
+deno_bin/
 
 # Backend build output
 tauri_backend_dist/

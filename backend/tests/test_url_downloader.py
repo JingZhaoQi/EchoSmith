@@ -75,3 +75,25 @@ def test_ytdlp_download_media_uses_bilibili_safe_options(
     assert opts["fragment_retries"] == 3
     assert opts["http_headers"]["Referer"] == "https://www.bilibili.com/"
     assert result["filename"] == "Bilibili  test video.mp3"
+
+
+def test_auth_failure_points_to_full_disk_access_when_macos_blocks(monkeypatch) -> None:
+    import url_downloader
+
+    def denied(_path: object) -> list[str]:
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(url_downloader.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(url_downloader.os, "listdir", denied)
+    assert "完全磁盘访问权限" in str(url_downloader._auth_failure(["chrome: x"]))
+
+    monkeypatch.setattr(url_downloader.os, "listdir", lambda _path: [])
+    message = str(url_downloader._auth_failure(["chrome: boom"]))
+    assert "登录" in message and "chrome: boom" in message
+
+
+def test_js_runtimes_passed_to_ytdlp() -> None:
+    from url_downloader import _safe_ytdlp_opts
+
+    runtimes = _safe_ytdlp_opts("https://www.youtube.com/watch?v=x")["js_runtimes"]
+    assert runtimes and all(isinstance(v, dict) for v in runtimes.values())

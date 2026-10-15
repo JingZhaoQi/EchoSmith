@@ -11,7 +11,20 @@ permissions:
 
 jobs:
   build-macos:
-    runs-on: macos-latest
+    # ponytail: one native job per arch instead of a universal app; a fat PyInstaller backend
+    # would need lipo on every .so/dylib plus a universal2 Python, for no user-visible gain
+    strategy:
+      matrix:
+        include:
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+            arch: arm64
+            dmg_arch: aarch64
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            arch: x86_64
+            dmg_arch: x64
+    runs-on: ${{ matrix.runner }}
 
     steps:
       - name: Checkout repository
@@ -27,15 +40,16 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install Rust with Universal Binary targets
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-apple-darwin,aarch64-apple-darwin
+          targets: ${{ matrix.target }}
 
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: tauri/src-tauri
+          key: ${{ matrix.target }}
 
       - name: Install dependencies (macOS)
         run: |
@@ -51,7 +65,7 @@ jobs:
         run: |
           python scripts/download_models.py
 
-      - name: Build backend distribution (Universal Binary)
+      - name: Build backend distribution (${{ matrix.arch }})
         run: |
           bash scripts/build_backend.sh
 
@@ -84,40 +98,35 @@ jobs:
           ls -la tauri/src-tauri/backend/
           du -sh tauri/src-tauri/backend/
 
-      - name: Build Tauri app (x86_64)
+      - name: Build Tauri app (${{ matrix.target }})
         working-directory: tauri
         env:
           APPLE_SIGNING_IDENTITY: "-"
         run: |
-          npm run build -- --target x86_64-apple-darwin --bundles app
+          npm run build -- --target ${{ matrix.target }} --bundles app
 
-      - name: Build Tauri app (aarch64)
-        working-directory: tauri
-        env:
-          APPLE_SIGNING_IDENTITY: "-"
+      - name: Verify every bundled binary is ${{ matrix.arch }}
         run: |
-          npm run build -- --target aarch64-apple-darwin --bundles app
-
-      - name: Create Universal Binary DMG
-        run: |
-          mkdir -p tauri/src-tauri/target/universal-apple-darwin/release/bundle/dmg
-          mkdir -p tauri/src-tauri/target/universal-apple-darwin/release/bundle/macos
-          
-          X86_APP="tauri/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/EchoSmith.app"
-          ARM_APP="tauri/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/EchoSmith.app"
-          UNIVERSAL_APP="tauri/src-tauri/target/universal-apple-darwin/release/bundle/macos/EchoSmith.app"
-          
-          # Copy ARM app as base
-          cp -R "$ARM_APP" "$UNIVERSAL_APP"
-          
-          # Create universal binary for main executable
-          lipo -create \
-            "$X86_APP/Contents/MacOS/EchoSmith" \
-            "$ARM_APP/Contents/MacOS/EchoSmith" \
-            -output "$UNIVERSAL_APP/Contents/MacOS/EchoSmith"
-          
-          echo "Universal binary created:"
-          file "$UNIVERSAL_APP/Contents/MacOS/EchoSmith"
+          APP="tauri/src-tauri/target/${{ matrix.target }}/release/bundle/macos/EchoSmith.app"
+          BACKEND="$APP/Contents/Resources/backend"
+          fail=0
+          for f in "$APP/Contents/MacOS/EchoSmith" "$BACKEND/backend" \
+                   "$BACKEND/_internal/ffmpeg_bin/ffmpeg" "$BACKEND/_internal/ffmpeg_bin/ffprobe" \
+                   "$BACKEND/_internal/deno_bin/deno"; do
+            [ -f "$f" ] || { echo "ERROR: missing $f"; fail=1; continue; }
+            file "$f"; lipo -info "$f"
+          done
+          # Every Mach-O (dylibs, Python extension .so files) must contain the target arch
+          while IFS= read -r -d '' f; do
+            if file -b "$f" | grep -q Mach-O && ! lipo -archs "$f" | grep -qw "${{ matrix.arch }}"; then
+              echo "ERROR: $f is $(lipo -archs "$f"), expected ${{ matrix.arch }}"; fail=1
+            fi
+          done < <(find "$APP" -type f -print0)
+          [ "$fail" = 0 ]
+          # Natively executable on this runner, with the rewritten dylib paths
+          "$BACKEND/_internal/ffmpeg_bin/ffmpeg" -version | head -1
+          "$BACKEND/_internal/ffmpeg_bin/ffprobe" -version | head -1
+          "$BACKEND/_internal/deno_bin/deno" --version
 
       - name: Install create-dmg
         run: |
@@ -125,14 +134,14 @@ jobs:
 
       - name: Create DMG
         run: |
-          UNIVERSAL_APP="tauri/src-tauri/target/universal-apple-darwin/release/bundle/macos/EchoSmith.app"
-          DMG_OUTPUT="tauri/src-tauri/target/universal-apple-darwin/release/bundle/dmg"
-          
+          APP="tauri/src-tauri/target/${{ matrix.target }}/release/bundle/macos/EchoSmith.app"
+          DMG_OUTPUT="tauri/src-tauri/target/${{ matrix.target }}/release/bundle/dmg"
+
           VERSION=$(grep '"version"' tauri/src-tauri/tauri.conf.json | head -1 | sed 's/.*: "\(.*\)".*/\1/')
-          DMG_NAME="EchoSmith_${VERSION}_universal.dmg"
-          
+          DMG_NAME="EchoSmith_${VERSION}_${{ matrix.dmg_arch }}.dmg"
+
           mkdir -p "$DMG_OUTPUT"
-          
+
           # Use create-dmg for proper DMG with Applications link
           create-dmg \
             --volname "EchoSmith" \
@@ -143,16 +152,16 @@ jobs:
             --app-drop-link 480 170 \
             --no-internet-enable \
             "$DMG_OUTPUT/$DMG_NAME" \
-            "$UNIVERSAL_APP"
-          
+            "$APP"
+
           echo "DMG created: $DMG_OUTPUT/$DMG_NAME"
           ls -la "$DMG_OUTPUT/"
 
-      - name: Upload artifacts (Universal)
+      - name: Upload artifacts (${{ matrix.dmg_arch }})
         uses: actions/upload-artifact@v4
         with:
-          name: echosmith-macos-universal
-          path: tauri/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          name: echosmith-macos-${{ matrix.dmg_arch }}
+          path: tauri/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
 
   build-windows:
     runs-on: windows-latest
@@ -190,7 +199,8 @@ jobs:
           $ExtractDir = "$env:TEMP\ffmpeg-extract"
           $InstallDir = "C:\ffmpeg"
           Write-Host "Downloading static ffmpeg..."
-          Invoke-WebRequest -Uri $FfmpegUrl -OutFile $ZipPath
+          # BtbN re-publishes the "latest" release daily; retry across the brief window where the asset 404s
+          Invoke-WebRequest -Uri $FfmpegUrl -OutFile $ZipPath -MaximumRetryCount 10 -RetryIntervalSec 30
           Expand-Archive -Path $ZipPath -DestinationPath $ExtractDir -Force
           $BinDir = (Get-ChildItem $ExtractDir -Directory | Select-Object -First 1).FullName + "\bin"
           New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
@@ -278,7 +288,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            echosmith-macos-universal/*
+            echosmith-macos-*/*
             echosmith-windows/**/*
           draft: true
           generate_release_notes: true

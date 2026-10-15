@@ -9,7 +9,7 @@
 
   [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
   [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-blue)](https://github.com/JingZhaoQi/EchoSmith/releases)
-  [![Version](https://img.shields.io/badge/version-2.0.1-green)](https://github.com/JingZhaoQi/EchoSmith/releases)
+  [![Version](https://img.shields.io/badge/version-2.0.2-green)](https://github.com/JingZhaoQi/EchoSmith/releases)
 
 </div>
 
@@ -49,7 +49,8 @@ Get it from the [Releases](https://github.com/JingZhaoQi/EchoSmith/releases) pag
 
 | Platform | File | Notes |
 |----------|------|-------|
-| macOS | `EchoSmith_x.x.x_universal.dmg` | Universal (Intel + Apple Silicon) |
+| macOS | `EchoSmith_x.x.x_aarch64.dmg` | Apple Silicon (M1 and later) |
+| macOS | `EchoSmith_x.x.x_x64.dmg` | Intel |
 | Windows | `EchoSmith_x.x.x_x64-setup.exe` | NSIS installer |
 | Windows | `EchoSmith_x.x.x_x64_en-US.msi` | MSI installer |
 
