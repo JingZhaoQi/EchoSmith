@@ -49,7 +49,8 @@ Get it from the [Releases](https://github.com/JingZhaoQi/EchoSmith/releases) pag
 
 | Platform | File | Notes |
 |----------|------|-------|
-| macOS | `EchoSmith_x.x.x_universal.dmg` | Universal (Intel + Apple Silicon) |
+| macOS | `EchoSmith_x.x.x_aarch64.dmg` | Apple Silicon (M1 and later) |
+| macOS | `EchoSmith_x.x.x_x64.dmg` | Intel |
 | Windows | `EchoSmith_x.x.x_x64-setup.exe` | NSIS installer |
 | Windows | `EchoSmith_x.x.x_x64_en-US.msi` | MSI installer |
 

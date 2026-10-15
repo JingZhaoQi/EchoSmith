@@ -49,7 +49,8 @@
 
 | 平台 | 文件 | 说明 |
 |------|------|------|
-| macOS | `EchoSmith_x.x.x_universal.dmg` | Intel + Apple Silicon 通用 |
+| macOS | `EchoSmith_x.x.x_aarch64.dmg` | Apple Silicon（M1 及以后） |
+| macOS | `EchoSmith_x.x.x_x64.dmg` | Intel |
 | Windows | `EchoSmith_x.x.x_x64-setup.exe` | NSIS 安装包 |
 | Windows | `EchoSmith_x.x.x_x64_en-US.msi` | MSI 安装包 |
 
